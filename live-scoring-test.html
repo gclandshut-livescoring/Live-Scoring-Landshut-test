@@ -1,0 +1,844 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live-Scoring – GC Landshut</title>
+<script src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7/babel.min.js" crossorigin></script>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: #f2efe5; }
+  #root { min-height: 100vh; }
+  input, select, button { font-family: inherit; }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 16px; }
+  @media (min-width: 900px) { .wrap { max-width: 900px; padding: 32px; } }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react" data-type="module">
+const { useState, useEffect, useCallback, useRef } = React;
+
+// ============================================================
+// FIREBASE-KONFIGURATION
+// Gleiche Datenbank wie das Ryder-Cup-Tool, eigener Datenpfad.
+// ============================================================
+const FIREBASE_URL = "https://ryder-cup-landshut-default-rtdb.europe-west1.firebasedatabase.app";
+const BASE = "liveScoring";
+
+async function fbFetch(path, options) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
+  try {
+    return await fetch(`${FIREBASE_URL}/${BASE}/${path}.json`, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+async function fbGet(path) {
+  const res = await fbFetch(path);
+  if (!res.ok) throw new Error('Firebase GET fehlgeschlagen: ' + res.status);
+  return res.json();
+}
+async function fbPut(path, value) {
+  const res = await fbFetch(path, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value) });
+  if (!res.ok) throw new Error('Firebase PUT fehlgeschlagen: ' + res.status);
+}
+async function fbPatch(path, value) {
+  const res = await fbFetch(path, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value) });
+  if (!res.ok) throw new Error('Firebase PATCH fehlgeschlagen: ' + res.status);
+}
+
+// Farben (angelehnt an Ryder-Cup-Tool, eigenständige Palette fürs Zählspiel)
+const C = {
+  board: '#f2efe5', card: '#ffffff', line: '#ddd6c4',
+  ink: '#1c2118', inkDim: '#585d50', muted: '#8a8d80',
+  accent: '#2563c9', accentTint: 'rgba(37,99,201,0.12)',
+  green: '#1d7a4c', greenTint: 'rgba(29,122,76,0.12)',
+  red: '#bb3a2c', redTint: 'rgba(187,58,44,0.10)',
+  gold: '#b48a2e',
+  eagle: '#e8b93a', birdie: '#c0392b', bogey: '#1a1a1a', dblbogey: '#2563c9',
+};
+
+const TOURNAMENT_TYPES = [
+  { id: 'klubmeisterschaft', label: 'Klubmeisterschaft' },
+  { id: 'masters', label: 'Masters' },
+  { id: 'sponsorenturnier', label: 'Sponsorenturnier' },
+  { id: 'klubturnier', label: 'Reguläres Klubturnier' },
+  { id: 'ryder_cup', label: 'Ryder Cup (nur Label)' },
+];
+const FIXED_CLASSES = ['Herren', 'Damen', 'AK30', 'AK50', 'AK65'];
+const HCP_LETTERS = ['A', 'B', 'C', 'D'];
+
+const DEFAULT_PARS_18 = [4,4,3,5,4,4,3,5,4, 4,3,4,5,4,4,3,5,4];
+const DEFAULT_SI_18   = [7,3,15,1,11,5,17,9,13, 8,14,2,10,4,6,18,12,16];
+const DEFAULT_PARS_9 = DEFAULT_PARS_18.slice(0,9);
+const DEFAULT_SI_9 = [5,1,9,3,7,4,8,2,6];
+
+function newId() { return Math.random().toString(36).slice(2, 9); }
+function genToken() { return Math.random().toString(36).slice(2, 10); }
+function genPassword() { return Math.floor(1000 + Math.random() * 9000).toString(); }
+
+function strokesOnHole(hcp, si, holesCount) {
+  const base = Math.floor(hcp / holesCount);
+  const extra = si <= (hcp % holesCount) ? 1 : 0;
+  return base + extra;
+}
+
+function grossTotal(scores) {
+  const vals = Object.values(scores || {}).filter(v => v !== null && v !== undefined && v !== '');
+  return vals.reduce((a, b) => a + Number(b), 0);
+}
+function holesPlayed(scores) {
+  return Object.values(scores || {}).filter(v => v !== null && v !== undefined && v !== '').length;
+}
+
+function playerHcpClass(hcp, hcpClasses) {
+  for (const c of hcpClasses) {
+    const from = c.from === '' || c.from === undefined ? -999 : Number(c.from);
+    const to = c.to === '' || c.to === undefined ? 999 : Number(c.to);
+    if (hcp >= from && hcp <= to) return c.id;
+  }
+  return null;
+}
+
+// ============================================================
+// APP
+// ============================================================
+function App() {
+  const [phase, setPhase] = useState('loading'); // loading | display | adminGate | admin | soloGate | solo
+  const [tournament, setTournament] = useState(null);
+  const [err, setErr] = useState('');
+  const [soloFlightId, setSoloFlightId] = useState(null);
+
+  const load = useCallback(async () => {
+    try {
+      const t = await fbGet('tournament');
+      setTournament(t);
+      return t;
+    } catch (e) {
+      setErr('Verbindung zur Datenbank fehlgeschlagen.');
+      return null;
+    }
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      const t = await load();
+      const params = new URLSearchParams(window.location.search);
+      const token = params.get('m');
+      if (params.get('admin') === '1') {
+        setPhase('adminGate');
+        return;
+      }
+      if (token) {
+        const flightId = Object.keys((t && t.flights) || {}).find(id => t.flights[id].token === token);
+        if (flightId) {
+          setSoloFlightId(flightId);
+          const savedAuth = localStorage.getItem('ls_auth_' + flightId);
+          setPhase(savedAuth === '1' ? 'solo' : 'soloGate');
+          return;
+        }
+      }
+      setPhase('display');
+    })();
+  }, [load]);
+
+  useEffect(() => {
+    if (phase === 'loading') return;
+    const iv = setInterval(load, 6000);
+    return () => clearInterval(iv);
+  }, [phase, load]);
+
+  if (phase === 'loading') {
+    return <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.muted }}>Lädt…</div>;
+  }
+
+  if (phase === 'adminGate') {
+    return <AdminGate tournament={tournament} onAuthed={() => setPhase('admin')} onBack={() => { window.history.replaceState({}, '', window.location.pathname); setPhase('display'); }} />;
+  }
+  if (phase === 'admin') {
+    return <AdminDashboard tournament={tournament} reload={load} />;
+  }
+  if (phase === 'soloGate') {
+    return <SoloGate tournament={tournament} flightId={soloFlightId} onAuthed={() => setPhase('solo')} />;
+  }
+  if (phase === 'solo') {
+    return <SoloEntry tournament={tournament} flightId={soloFlightId} reload={load} />;
+  }
+  return <PublicLeaderboard tournament={tournament} err={err} />;
+}
+
+// ============================================================
+// ADMIN GATE
+// ============================================================
+function AdminGate({ tournament, onAuthed, onBack }) {
+  const [pin, setPin] = useState('');
+  const [error, setError] = useState('');
+  const pinSet = tournament && tournament.meta && tournament.meta.adminPin;
+
+  const submit = async () => {
+    if (!pinSet) { onAuthed(); return; }
+    if (pin === tournament.meta.adminPin) { onAuthed(); }
+    else setError('Falsche PIN.');
+  };
+
+  return (
+    <div className="wrap" style={{ maxWidth: 340, paddingTop: '20vh' }}>
+      <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: 24 }}>
+        <div style={{ fontSize: 18, fontWeight: 600, color: C.ink, marginBottom: 4 }}>Admin-Zugang</div>
+        <div style={{ fontSize: 13, color: C.muted, marginBottom: 16 }}>GC Landshut Live-Scoring</div>
+        <input type="password" placeholder="PIN" value={pin} onChange={e => setPin(e.target.value)}
+          style={{ width: '100%', padding: '10px 12px', border: `1px solid ${C.line}`, borderRadius: 6, fontSize: 15, marginBottom: 10 }} />
+        {error && <div style={{ color: C.red, fontSize: 13, marginBottom: 10 }}>{error}</div>}
+        <button onClick={submit} style={{ width: '100%', padding: '11px 0', background: C.ink, color: '#fff', border: 'none', borderRadius: 6, fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>Anmelden</button>
+        <button onClick={onBack} style={{ width: '100%', padding: '9px 0', background: 'none', border: 'none', color: C.muted, fontSize: 13, marginTop: 8, cursor: 'pointer' }}>Zurück zur Rangliste</button>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// SOLO GATE (Flight-Link, Passwort)
+// ============================================================
+function SoloGate({ tournament, flightId, onAuthed }) {
+  const [pw, setPw] = useState('');
+  const [error, setError] = useState('');
+  const flight = tournament && tournament.flights && tournament.flights[flightId];
+  if (!flight) return <div className="wrap">Flight nicht gefunden.</div>;
+
+  const submit = () => {
+    if (pw === flight.password) {
+      localStorage.setItem('ls_auth_' + flightId, '1');
+      onAuthed();
+    } else setError('Falsches Passwort.');
+  };
+
+  return (
+    <div className="wrap" style={{ maxWidth: 340, paddingTop: '20vh' }}>
+      <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: 24 }}>
+        <div style={{ fontSize: 18, fontWeight: 600, color: C.ink, marginBottom: 4 }}>{flight.name}</div>
+        <div style={{ fontSize: 13, color: C.muted, marginBottom: 16 }}>Bitte Passwort eingeben, um Scores einzutragen.</div>
+        <input type="password" placeholder="Passwort" value={pw} onChange={e => setPw(e.target.value)}
+          style={{ width: '100%', padding: '10px 12px', border: `1px solid ${C.line}`, borderRadius: 6, fontSize: 15, marginBottom: 10 }} />
+        {error && <div style={{ color: C.red, fontSize: 13, marginBottom: 10 }}>{error}</div>}
+        <button onClick={submit} style={{ width: '100%', padding: '11px 0', background: C.ink, color: '#fff', border: 'none', borderRadius: 6, fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>Bestätigen</button>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// ADMIN DASHBOARD
+// ============================================================
+function AdminDashboard({ tournament, reload }) {
+  const [tab, setTab] = useState('setup');
+  const meta = (tournament && tournament.meta) || null;
+
+  return (
+    <div className="wrap">
+      <div style={{ display: 'flex', gap: 8, marginBottom: 20, flexWrap: 'wrap' }}>
+        {[['setup', 'Turnier'], ['players', 'Spieler'], ['flights', 'Flights & Links']].map(([id, label]) => (
+          <button key={id} onClick={() => setTab(id)}
+            style={{ padding: '8px 16px', borderRadius: 6, border: `1px solid ${tab === id ? C.ink : C.line}`, background: tab === id ? C.ink : '#fff', color: tab === id ? '#fff' : C.ink, fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+            {label}
+          </button>
+        ))}
+        <a href="?" style={{ marginLeft: 'auto', fontSize: 13, color: C.muted, alignSelf: 'center' }}>Zur Live-Ansicht →</a>
+      </div>
+      {tab === 'setup' && <TournamentSetup tournament={tournament} reload={reload} />}
+      {tab === 'players' && <PlayerAdmin tournament={tournament} reload={reload} />}
+      {tab === 'flights' && <FlightAdmin tournament={tournament} reload={reload} />}
+    </div>
+  );
+}
+
+function TournamentSetup({ tournament, reload }) {
+  const m = (tournament && tournament.meta) || {};
+  const [name, setName] = useState(m.name || '');
+  const [type, setType] = useState(m.type || 'klubmeisterschaft');
+  const [holes, setHoles] = useState(m.holes || 18);
+  const [classificationMode, setClassificationMode] = useState(m.classificationMode || (type === 'klubmeisterschaft' ? 'fixed' : 'hcp'));
+  const [hcpClasses, setHcpClasses] = useState(m.hcpClasses || [{ id: 'A', from: 0, to: 8 }, { id: 'B', from: 8.1, to: 16 }]);
+  const [rounds, setRounds] = useState(m.rounds || [{ id: 1, label: 'Runde 1' }, { id: 2, label: 'Runde 2' }]);
+  const [adminPin, setAdminPin] = useState(m.adminPin || '2026');
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    if (type === 'klubmeisterschaft') setClassificationMode('fixed');
+    else setClassificationMode('hcp');
+  }, [type]);
+
+  const setHcpCount = (n) => {
+    const next = HCP_LETTERS.slice(0, n).map((letter, i) => hcpClasses[i] || { id: letter, from: '', to: '' });
+    setHcpClasses(next);
+  };
+  const updateCutoff = (i, field, val) => {
+    const next = [...hcpClasses];
+    next[i] = { ...next[i], [field]: val };
+    setHcpClasses(next);
+  };
+  const updateRoundLabel = (i, val) => {
+    const next = [...rounds];
+    next[i] = { ...next[i], label: val };
+    setRounds(next);
+  };
+  const addRound = () => setRounds([...rounds, { id: (rounds[rounds.length - 1]?.id || 0) + 1, label: `Runde ${rounds.length + 1}` }]);
+  const removeRound = (i) => setRounds(rounds.filter((_, idx) => idx !== i));
+
+  const save = async () => {
+    setSaving(true);
+    const pars = holes === 18 ? DEFAULT_PARS_18 : DEFAULT_PARS_9;
+    const si = holes === 18 ? DEFAULT_SI_18 : DEFAULT_SI_9;
+    const meta = {
+      name, type, holes, classificationMode,
+      fixedClasses: FIXED_CLASSES,
+      hcpClasses: classificationMode === 'hcp' ? hcpClasses : [],
+      rounds, adminPin,
+      scoringMode: 'strokeplay_net',
+      pars: m.pars || pars, si: m.si || si,
+    };
+    await fbPatch('tournament/meta', meta);
+    await reload();
+    setSaving(false);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  return (
+    <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20 }}>
+      <Field label="Turniername">
+        <input value={name} onChange={e => setName(e.target.value)} placeholder="z. B. Klubmeisterschaft 2026" style={inputStyle} />
+      </Field>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <Field label="Turnierart">
+          <select value={type} onChange={e => setType(e.target.value)} style={inputStyle}>
+            {TOURNAMENT_TYPES.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+          </select>
+        </Field>
+        <Field label="Lochanzahl">
+          <select value={holes} onChange={e => setHoles(Number(e.target.value))} style={inputStyle}>
+            <option value={18}>18 Loch</option>
+            <option value={9}>9 Loch</option>
+          </select>
+        </Field>
+      </div>
+
+      <Field label="Runden">
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {rounds.map((r, i) => (
+            <div key={i} style={{ display: 'flex', gap: 6 }}>
+              <input value={r.label} onChange={e => updateRoundLabel(i, e.target.value)} style={{ ...inputStyle, flex: 1 }} />
+              {rounds.length > 1 && <button onClick={() => removeRound(i)} style={smallBtn}>Entfernen</button>}
+            </div>
+          ))}
+          <button onClick={addRound} style={{ ...smallBtn, alignSelf: 'flex-start' }}>+ Runde hinzufügen</button>
+        </div>
+      </Field>
+
+      <Field label={type === 'klubmeisterschaft' ? 'Klassifizierung (automatisch)' : 'Klassifizierung'}>
+        {classificationMode === 'fixed' ? (
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {FIXED_CLASSES.map(c => <span key={c} style={badgeStyle}>{c}</span>)}
+          </div>
+        ) : (
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+              <span style={{ fontSize: 13, color: C.inkDim }}>Anzahl Handicap-Klassen</span>
+              <select value={hcpClasses.length} onChange={e => setHcpCount(Number(e.target.value))} style={{ ...inputStyle, width: 70 }}>
+                {[1, 2, 3, 4].map(n => <option key={n} value={n}>{n}</option>)}
+              </select>
+            </div>
+            {hcpClasses.map((c, i) => (
+              <div key={c.id} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                <span style={{ fontSize: 13, width: 16, color: C.inkDim, fontWeight: 600 }}>{c.id}</span>
+                <input type="number" placeholder="von" value={c.from} onChange={e => updateCutoff(i, 'from', e.target.value)} style={{ ...inputStyle, width: 80 }} />
+                <span style={{ fontSize: 12, color: C.muted }}>bis</span>
+                <input type="number" placeholder="bis" value={c.to} onChange={e => updateCutoff(i, 'to', e.target.value)} style={{ ...inputStyle, width: 80 }} />
+              </div>
+            ))}
+          </div>
+        )}
+      </Field>
+
+      <Field label="Admin-PIN">
+        <input value={adminPin} onChange={e => setAdminPin(e.target.value)} style={{ ...inputStyle, width: 140 }} />
+      </Field>
+
+      <button onClick={save} disabled={saving} style={{ padding: '11px 20px', background: C.ink, color: '#fff', border: 'none', borderRadius: 6, fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>
+        {saving ? 'Speichert…' : saved ? 'Gespeichert ✓' : 'Turnier speichern'}
+      </button>
+    </div>
+  );
+}
+
+function PlayerAdmin({ tournament, reload }) {
+  const players = (tournament && tournament.players) || {};
+  const meta = (tournament && tournament.meta) || {};
+  const [name, setName] = useState('');
+  const [hcp, setHcp] = useState('');
+  const [cls, setCls] = useState(meta.classificationMode === 'fixed' ? FIXED_CLASSES[0] : '');
+  const fileRef = useRef(null);
+
+  const addPlayer = async () => {
+    if (!name || hcp === '') return;
+    const id = newId();
+    await fbPatch('tournament/players/' + id, { name, hcp: Number(hcp), classes: cls ? [cls] : [] });
+    setName(''); setHcp('');
+    await reload();
+  };
+
+  const removePlayer = async (id) => {
+    await fbPut('tournament/players/' + id, null);
+    await reload();
+  };
+
+  const handleFile = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      const text = ev.target.result;
+      const lines = text.split(/\r?\n/).filter(l => l.trim());
+      const updates = {};
+      lines.forEach(line => {
+        const [pname, phcp, pcls] = line.split(',').map(s => s && s.trim());
+        if (!pname || phcp === undefined) return;
+        const id = newId();
+        updates[id] = { name: pname, hcp: Number(phcp), classes: pcls ? [pcls] : [] };
+      });
+      await fbPatch('tournament/players', updates);
+      await reload();
+      fileRef.current.value = '';
+    };
+    reader.readAsText(file);
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+          <span style={{ fontSize: 13, color: C.inkDim }}>Spielerliste hochladen (CSV: name,handicap{meta.classificationMode === 'fixed' ? ',klasse' : ''})</span>
+          <button onClick={() => fileRef.current.click()} style={smallBtn}>Datei wählen</button>
+          <input ref={fileRef} type="file" accept=".csv,text/csv" onChange={handleFile} style={{ display: 'none' }} />
+        </div>
+      </div>
+
+      <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20 }}>
+        <div style={{ fontSize: 13, color: C.inkDim, marginBottom: 10 }}>Spieler manuell hinzufügen</div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <input placeholder="Name" value={name} onChange={e => setName(e.target.value)} style={{ ...inputStyle, flex: 1, minWidth: 140 }} />
+          <input placeholder="Hcp" type="number" value={hcp} onChange={e => setHcp(e.target.value)} style={{ ...inputStyle, width: 80 }} />
+          {meta.classificationMode === 'fixed' && (
+            <select value={cls} onChange={e => setCls(e.target.value)} style={{ ...inputStyle, width: 110 }}>
+              {FIXED_CLASSES.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          )}
+          <button onClick={addPlayer} style={smallBtn}>+ Hinzufügen</button>
+        </div>
+      </div>
+
+      <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, overflow: 'hidden' }}>
+        {Object.entries(players).map(([id, p]) => (
+          <div key={id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 16px', borderBottom: `1px solid ${C.line}` }}>
+            <div>
+              <span style={{ fontSize: 14, fontWeight: 500 }}>{p.name}</span>
+              <span style={{ fontSize: 12, color: C.muted, marginLeft: 8 }}>Hcp {p.hcp} {p.classes && p.classes.length ? '· ' + p.classes.join(', ') : ''}</span>
+            </div>
+            <button onClick={() => removePlayer(id)} style={{ ...smallBtn, color: C.red }}>Entfernen</button>
+          </div>
+        ))}
+        {Object.keys(players).length === 0 && <div style={{ padding: 20, textAlign: 'center', color: C.muted, fontSize: 13 }}>Noch keine Spieler angelegt.</div>}
+      </div>
+    </div>
+  );
+}
+
+function FlightAdmin({ tournament, reload }) {
+  const players = (tournament && tournament.players) || {};
+  const flights = (tournament && tournament.flights) || {};
+  const [name, setName] = useState('');
+  const [selected, setSelected] = useState([]);
+
+  const toggle = (id) => setSelected(sel => sel.includes(id) ? sel.filter(x => x !== id) : [...sel, id]);
+
+  const createFlight = async () => {
+    if (!name || selected.length === 0) return;
+    const id = newId();
+    await fbPatch('tournament/flights/' + id, { name, playerIds: selected, token: genToken(), password: genPassword() });
+    setName(''); setSelected([]);
+    await reload();
+  };
+
+  const removeFlight = async (id) => {
+    await fbPut('tournament/flights/' + id, null);
+    await reload();
+  };
+
+  const baseUrl = window.location.origin + window.location.pathname;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20 }}>
+        <div style={{ fontSize: 13, color: C.inkDim, marginBottom: 10 }}>Neuen Flight anlegen</div>
+        <input placeholder="Flight-Name (z. B. Flight 1)" value={name} onChange={e => setName(e.target.value)} style={{ ...inputStyle, marginBottom: 10 }} />
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
+          {Object.entries(players).map(([id, p]) => (
+            <button key={id} onClick={() => toggle(id)}
+              style={{ padding: '6px 12px', borderRadius: 6, border: `1px solid ${selected.includes(id) ? C.ink : C.line}`, background: selected.includes(id) ? C.ink : '#fff', color: selected.includes(id) ? '#fff' : C.ink, fontSize: 12, cursor: 'pointer' }}>
+              {p.name}
+            </button>
+          ))}
+        </div>
+        <button onClick={createFlight} style={smallBtn}>+ Flight erstellen</button>
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {Object.entries(flights).map(([id, f]) => (
+          <div key={id} style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: 16 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+              <span style={{ fontWeight: 600, fontSize: 14 }}>{f.name}</span>
+              <button onClick={() => removeFlight(id)} style={{ ...smallBtn, color: C.red }}>Entfernen</button>
+            </div>
+            <div style={{ fontSize: 12, color: C.muted, marginBottom: 8 }}>{(f.playerIds || []).map(pid => players[pid]?.name).filter(Boolean).join(', ')}</div>
+            <div style={{ fontSize: 12, color: C.inkDim, wordBreak: 'break-all', background: C.board, padding: '8px 10px', borderRadius: 6 }}>
+              {baseUrl}?m={f.token}
+            </div>
+            <div style={{ fontSize: 12, color: C.inkDim, marginTop: 4 }}>Passwort: <b>{f.password}</b></div>
+          </div>
+        ))}
+        {Object.keys(flights).length === 0 && <div style={{ color: C.muted, fontSize: 13, padding: 10 }}>Noch keine Flights angelegt.</div>}
+      </div>
+    </div>
+  );
+}
+
+function Field({ label, children }) {
+  return <div style={{ marginBottom: 14 }}><div style={{ fontSize: 12, color: C.inkDim, marginBottom: 4 }}>{label}</div>{children}</div>;
+}
+const inputStyle = { width: '100%', boxSizing: 'border-box', border: `1px solid ${C.line}`, borderRadius: 6, padding: '9px 10px', fontSize: 14, color: C.ink, background: '#fff' };
+const smallBtn = { padding: '7px 12px', borderRadius: 6, border: `1px solid ${C.line}`, background: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer', color: C.ink };
+const badgeStyle = { background: C.accentTint, color: C.accent, fontSize: 12, padding: '4px 10px', borderRadius: 6, fontWeight: 500 };
+
+// ============================================================
+// PUBLIC LEADERBOARD
+// ============================================================
+function PublicLeaderboard({ tournament, err }) {
+  if (err) return <div className="wrap" style={{ textAlign: 'center', color: C.red, paddingTop: '20vh' }}>{err}</div>;
+  if (!tournament || !tournament.meta) {
+    return (
+      <div className="wrap" style={{ textAlign: 'center', paddingTop: '20vh', color: C.muted }}>
+        Noch kein Turnier angelegt.<br />
+        <a href="?admin=1" style={{ color: C.accent }}>Zum Admin-Bereich</a>
+      </div>
+    );
+  }
+  const m = tournament.meta;
+  const players = tournament.players || {};
+  const flights = tournament.flights || {};
+  const scores = tournament.scores || {};
+
+  const classIds = m.classificationMode === 'fixed' ? m.fixedClasses : ['Brutto', ...m.hcpClasses.map(c => c.id)];
+  const [activeClass, setActiveClass] = useState(classIds[0]);
+  const [activeRound, setActiveRound] = useState((m.rounds && m.rounds[m.rounds.length - 1].id) || 1);
+  const [detailPlayer, setDetailPlayer] = useState(null);
+
+  useEffect(() => { if (!classIds.includes(activeClass)) setActiveClass(classIds[0]); }, [m.classificationMode]);
+
+  // Alle Scores eines Spielers über eine Runde finden (Flight-Zuordnung)
+  const findPlayerRoundScores = (playerId, roundId) => {
+    for (const fid of Object.keys(flights)) {
+      const f = flights[fid];
+      if ((f.playerIds || []).includes(playerId)) {
+        return (scores[fid] && scores[fid][roundId] && scores[fid][roundId][playerId]) || {};
+      }
+    }
+    return {};
+  };
+
+  const totalGrossAcrossRounds = (playerId) => {
+    let sum = 0, any = false;
+    (m.rounds || []).forEach(r => {
+      const s = findPlayerRoundScores(playerId, r.id);
+      if (holesPlayed(s) > 0) { sum += grossTotal(s); any = true; }
+    });
+    return any ? sum : null;
+  };
+
+  const rows = Object.entries(players).map(([id, p]) => {
+    const gross = totalGrossAcrossRounds(id);
+    const net = gross === null ? null : gross - p.hcp;
+    const thruScores = findPlayerRoundScores(id, activeRound);
+    return { id, ...p, gross, net, thru: holesPlayed(thruScores) };
+  });
+
+  let visibleRows;
+  if (m.classificationMode === 'fixed') {
+    visibleRows = rows.filter(r => (r.classes || []).includes(activeClass));
+    visibleRows.sort((a, b) => (a.net ?? 999) - (b.net ?? 999));
+  } else if (activeClass === 'Brutto') {
+    visibleRows = rows.filter(r => r.gross !== null);
+    visibleRows.sort((a, b) => (a.gross ?? 999) - (b.gross ?? 999));
+  } else {
+    visibleRows = rows.filter(r => playerHcpClass(r.hcp, m.hcpClasses) === activeClass);
+    visibleRows.sort((a, b) => (a.net ?? 999) - (b.net ?? 999));
+  }
+
+  return (
+    <div className="wrap" style={{ maxWidth: 620 }}>
+      <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, overflow: 'hidden' }}>
+        <div style={{ padding: '20px 24px', textAlign: 'center', borderBottom: `1px solid ${C.line}` }}>
+          <div style={{ fontSize: 11, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>GC Landshut · {m.name || 'Turnier'}</div>
+          <div style={{ fontSize: 20, fontWeight: 600 }}>Live-Rangliste</div>
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 5, marginTop: 8, background: C.redTint, color: C.red, fontSize: 11, padding: '3px 10px', borderRadius: 20 }}>
+            live
+          </div>
+        </div>
+
+        {m.rounds && m.rounds.length > 1 && (
+          <div style={{ display: 'flex', gap: 6, padding: '10px 16px', borderBottom: `1px solid ${C.line}`, overflowX: 'auto' }}>
+            {m.rounds.map(r => (
+              <button key={r.id} onClick={() => setActiveRound(r.id)}
+                style={{ flexShrink: 0, fontSize: 12, padding: '5px 12px', borderRadius: 6, border: `1px solid ${activeRound === r.id ? C.ink : C.line}`, background: activeRound === r.id ? C.ink : '#fff', color: activeRound === r.id ? '#fff' : C.ink, cursor: 'pointer' }}>
+                {r.label}
+              </button>
+            ))}
+          </div>
+        )}
+
+        <div style={{ display: 'flex', gap: 6, padding: '12px 16px', borderBottom: `1px solid ${C.line}`, overflowX: 'auto' }}>
+          {classIds.map(c => (
+            <button key={c} onClick={() => setActiveClass(c)}
+              style={{ flexShrink: 0, fontSize: 12, padding: '5px 12px', borderRadius: 6, border: `1px solid ${activeClass === c ? C.ink : C.line}`, background: activeClass === c ? C.ink : '#fff', color: activeClass === c ? '#fff' : C.ink, cursor: 'pointer' }}>
+              {c}
+            </button>
+          ))}
+        </div>
+
+        <div>
+          {visibleRows.map((r, i) => (
+            <div key={r.id} onClick={() => setDetailPlayer(r.id)}
+              style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 20px', background: i === 0 && r.gross !== null ? C.greenTint : 'transparent', borderBottom: `1px solid ${C.line}`, cursor: 'pointer' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                <span style={{ fontSize: 13, color: C.muted, width: 18, fontWeight: 600 }}>{i + 1}</span>
+                <div>
+                  <div style={{ fontSize: 15, fontWeight: 500 }}>{r.name}</div>
+                  <div style={{ fontSize: 11, color: C.muted }}>Hcp {r.hcp} · {r.thru}/{m.holes} Loch</div>
+                </div>
+              </div>
+              <span style={{ fontSize: 16, fontWeight: 600, color: i === 0 && r.gross !== null ? C.green : C.ink }}>
+                {activeClass === 'Brutto' ? (r.gross ?? '–') : (r.net === null ? '–' : (r.net > 0 ? '+' + r.net : r.net === 0 ? 'E' : r.net))}
+              </span>
+            </div>
+          ))}
+          {visibleRows.length === 0 && <div style={{ padding: 24, textAlign: 'center', color: C.muted, fontSize: 13 }}>Noch keine Spieler in dieser Klasse.</div>}
+        </div>
+      </div>
+
+      {detailPlayer && (
+        <ScoreDetailModal
+          tournament={tournament}
+          playerId={detailPlayer}
+          initialRound={activeRound}
+          findPlayerRoundScores={findPlayerRoundScores}
+          onClose={() => setDetailPlayer(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function ScoreDetailModal({ tournament, playerId, initialRound, findPlayerRoundScores, onClose }) {
+  const m = tournament.meta;
+  const p = tournament.players[playerId];
+  const [round, setRound] = useState(initialRound);
+  const scores = findPlayerRoundScores(playerId, round);
+  const pars = m.pars, si = m.si, holes = m.holes;
+
+  const scoreStyle = (diff) => {
+    if (diff <= -2) return { bg: C.eagle, col: '#3d2e00' };
+    if (diff === -1) return { bg: C.birdie, col: '#fff' };
+    if (diff === 0) return { bg: 'transparent', col: C.ink };
+    if (diff === 1) return { bg: C.bogey, col: '#fff' };
+    return { bg: C.dblbogey, col: '#fff' };
+  };
+
+  const renderBlock = (startIdx, count) => {
+    const cells = [];
+    for (let i = startIdx; i < startIdx + count; i++) {
+      const s = scores[i];
+      const hasScore = s !== undefined && s !== null && s !== '';
+      const diff = hasScore ? Number(s) - pars[i] : null;
+      const st = hasScore ? scoreStyle(diff) : { bg: 'transparent', col: C.muted };
+      cells.push(
+        <td key={i} style={{ padding: '4px 2px', textAlign: 'center' }}>
+          <span style={{ position: 'relative', display: 'inline-flex', width: 26, height: 26, alignItems: 'center', justifyContent: 'center', borderRadius: '50%', background: st.bg, color: st.col, fontWeight: 500, fontSize: 13 }}>
+            <span style={{ position: 'absolute', top: -7, right: -8, fontSize: 8, color: C.muted }}>{si[i]}</span>
+            {hasScore ? s : '–'}
+          </span>
+        </td>
+      );
+    }
+    let holeRow = [], parRow = [];
+    for (let i = startIdx; i < startIdx + count; i++) {
+      holeRow.push(<td key={i} style={{ padding: '3px', textAlign: 'center', fontSize: 11, color: C.muted }}>{i + 1}</td>);
+      parRow.push(<td key={i} style={{ padding: '3px', textAlign: 'center', fontSize: 11, color: C.muted }}>{pars[i]}</td>);
+    }
+    return (
+      <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 8 }}>
+        <tbody>
+          <tr><td style={{ padding: '3px 6px', fontSize: 10, color: C.muted, textAlign: 'left' }}>Loch</td>{holeRow}</tr>
+          <tr><td style={{ padding: '3px 6px', fontSize: 10, color: C.muted, textAlign: 'left' }}>Par</td>{parRow}</tr>
+          <tr><td style={{ padding: '5px 6px', fontSize: 11, fontWeight: 500, textAlign: 'left' }}>Score</td>{cells}</tr>
+        </tbody>
+      </table>
+    );
+  };
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16, zIndex: 50 }} onClick={onClose}>
+      <div style={{ background: C.card, borderRadius: 12, width: '100%', maxWidth: 420, overflow: 'hidden' }} onClick={e => e.stopPropagation()}>
+        <div style={{ padding: '16px 20px 0' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div>
+              <div style={{ fontSize: 16, fontWeight: 600 }}>{p.name} <span style={{ fontSize: 12, fontWeight: 400, color: C.muted }}>(hcp {p.hcp})</span></div>
+            </div>
+            <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 18, cursor: 'pointer', color: C.muted }}>×</button>
+          </div>
+          {m.rounds.length > 1 && (
+            <div style={{ display: 'flex', gap: 6, margin: '12px 0' }}>
+              {m.rounds.map(r => (
+                <button key={r.id} onClick={() => setRound(r.id)}
+                  style={{ fontSize: 12, padding: '5px 12px', borderRadius: 6, border: `1px solid ${round === r.id ? C.ink : C.line}`, background: round === r.id ? C.ink : '#fff', color: round === r.id ? '#fff' : C.ink, cursor: 'pointer' }}>
+                  {r.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <div style={{ padding: '0 20px 16px' }}>
+          {renderBlock(0, holes === 18 ? 9 : holes)}
+          {holes === 18 && renderBlock(9, 9)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// SOLO SCORE ENTRY
+// ============================================================
+function SoloEntry({ tournament, flightId, reload }) {
+  const m = tournament.meta;
+  const flight = tournament.flights[flightId];
+  const players = (flight.playerIds || []).map(id => ({ id, ...tournament.players[id] }));
+  const [round, setRound] = useState(m.rounds[m.rounds.length - 1].id);
+  const [hole, setHole] = useState(1);
+  const scores = (tournament.scores && tournament.scores[flightId] && tournament.scores[flightId][round]) || {};
+
+  const setScore = async (playerId, val) => {
+    await fbPatch(`tournament/scores/${flightId}/${round}/${playerId}`, { [hole - 1]: val });
+    await reload();
+  };
+
+  const completedCount = () => {
+    let count = 0;
+    for (let h = 1; h <= m.holes; h++) {
+      const allEntered = players.every(p => {
+        const ps = (scores[p.id]) || {};
+        return ps[h - 1] !== undefined && ps[h - 1] !== null && ps[h - 1] !== '';
+      });
+      if (allEntered) count = h; else break;
+    }
+    return count;
+  };
+  const completed = completedCount();
+
+  return (
+    <div className="wrap" style={{ maxWidth: 380 }}>
+      <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 16, overflow: 'hidden' }}>
+        <div style={{ padding: '14px 18px', borderBottom: `1px solid ${C.line}`, textAlign: 'center' }}>
+          <div style={{ fontSize: 11, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{flight.name}</div>
+          {m.rounds.length > 1 && (
+            <div style={{ display: 'flex', gap: 6, justifyContent: 'center', marginTop: 8 }}>
+              {m.rounds.map(r => (
+                <button key={r.id} onClick={() => setRound(r.id)}
+                  style={{ fontSize: 12, padding: '5px 12px', borderRadius: 6, border: `1px solid ${round === r.id ? C.ink : C.line}`, background: round === r.id ? C.ink : '#fff', color: round === r.id ? '#fff' : C.ink, cursor: 'pointer' }}>
+                  {r.label}
+                </button>
+              ))}
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: 5, justifyContent: 'center', marginTop: 10, flexWrap: 'wrap' }}>
+            {Array.from({ length: m.holes }).map((_, i) => {
+              const n = i + 1;
+              const filled = n <= completed;
+              const active = n === hole;
+              return <span key={n} onClick={() => setHole(n)} style={{ cursor: 'pointer', width: 7, height: 7, borderRadius: '50%', background: active ? C.accent : filled ? C.muted : C.line }} />;
+            })}
+          </div>
+        </div>
+
+        <div style={{ padding: 18, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <button onClick={() => setHole(h => Math.max(1, h - 1))} style={circleBtn}>‹</button>
+          <div style={{ textAlign: 'center' }}>
+            <div style={{ fontSize: 11, color: C.muted }}>Loch</div>
+            <div style={{ fontSize: 32, fontWeight: 600 }}>{hole}</div>
+            <div style={{ fontSize: 11, color: C.muted }}>Par {m.pars[hole - 1]} · Vorgabe {m.si[hole - 1]}</div>
+          </div>
+          <button onClick={() => setHole(h => Math.min(m.holes, h + 1))} style={circleBtn}>›</button>
+        </div>
+
+        <div style={{ padding: '4px 18px 18px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {players.map(p => {
+            const cur = (scores[p.id] && scores[p.id][hole - 1] !== undefined && scores[p.id][hole - 1] !== null && scores[p.id][hole - 1] !== '') ? Number(scores[p.id][hole - 1]) : m.pars[hole - 1];
+            return (
+              <div key={p.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', background: C.board, borderRadius: 8 }}>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 500 }}>{p.name}</div>
+                  <div style={{ fontSize: 10, color: C.muted }}>Hcp {p.hcp}</div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <button onClick={() => setScore(p.id, Math.max(1, cur - 1))} style={smallCircleBtn}>−</button>
+                  <span style={{ fontSize: 18, fontWeight: 600, minWidth: 20, textAlign: 'center' }}>{cur}</span>
+                  <button onClick={() => setScore(p.id, cur + 1)} style={smallCircleBtn}>+</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={{ padding: '12px 18px', borderTop: `1px solid ${C.line}`, textAlign: 'center', fontSize: 11, color: C.muted }}>
+          ✓ Automatisch gespeichert
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const circleBtn = { width: 36, height: 36, borderRadius: '50%', border: `1px solid ${C.line}`, background: '#fff', fontSize: 18, cursor: 'pointer', color: C.ink };
+const smallCircleBtn = { width: 30, height: 30, borderRadius: '50%', border: `1px solid ${C.line}`, background: '#fff', fontSize: 14, cursor: 'pointer', color: C.ink };
+
+class ErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(error) { return { error }; }
+  componentDidCatch(error, info) { console.error('App-Fehler:', error, info); }
+  render() {
+    if (this.state.error) {
+      return <div style={{ minHeight: '100vh', background: '#fff', color: '#900', fontFamily: 'monospace', padding: 20, whiteSpace: 'pre-wrap' }}>
+        <h2>Es ist ein Fehler aufgetreten:</h2>{String(this.state.error && this.state.error.stack || this.state.error)}
+      </div>;
+    }
+    return this.props.children;
+  }
+}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<ErrorBoundary><App /></ErrorBoundary>);
+</script>
+</body>
+</html>
