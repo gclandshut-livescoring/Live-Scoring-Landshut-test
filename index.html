@@ -653,6 +653,12 @@ function PublicLeaderboard({ tournament, err }) {
 
   useEffect(() => { if (!classIds.includes(activeClass)) setActiveClass(classIds[0]); }, [m.classificationMode]);
 
+  // Erkennt, ob dieses Gerät bereits bei einem Flight für die Score-Eingabe angemeldet war,
+  // damit der Zurück-Button auf die richtige Scorekarte verlinkt.
+  const myFlightToken = Object.entries(flights).find(
+    ([fid]) => localStorage.getItem('ls_auth_' + fid) === '1'
+  )?.[1]?.token || null;
+
   // Alle Scores eines Spielers über eine Runde finden (Flight-Zuordnung)
   const findPlayerRoundScores = (playerId, roundId) => {
     for (const fid of Object.keys(flights)) {
@@ -754,6 +760,14 @@ function PublicLeaderboard({ tournament, err }) {
 
   return (
     <div className="wrap" style={{ maxWidth: 620 }}>
+      {myFlightToken && (
+        <a href={`?m=${myFlightToken}`} style={{
+          display: 'block', textAlign: 'center', padding: '13px 0', marginBottom: 12,
+          background: C.ink, color: '#fff', borderRadius: 10, fontSize: 15, fontWeight: 600, textDecoration: 'none'
+        }}>
+          ← Zurück zur Scorekarte
+        </a>
+      )}
       <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, overflow: 'hidden' }}>
         <div style={{ padding: '20px 24px', textAlign: 'center', borderBottom: `1px solid ${C.line}` }}>
           <div style={{ fontSize: 11, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>GC Landshut · {m.name || 'Turnier'}</div>
@@ -949,6 +963,12 @@ function SoloEntry({ tournament, flightId, reload }) {
 
   return (
     <div className="wrap" style={{ maxWidth: 380 }}>
+      <a href={window.location.pathname} style={{
+        display: 'block', textAlign: 'center', padding: '13px 0', marginBottom: 12,
+        background: C.ink, color: '#fff', borderRadius: 10, fontSize: 15, fontWeight: 600, textDecoration: 'none'
+      }}>
+        Live-Rangliste ansehen →
+      </a>
       <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 16, overflow: 'hidden' }}>
         <div style={{ padding: '14px 18px', borderBottom: `1px solid ${C.line}`, textAlign: 'center' }}>
           <div style={{ fontSize: 11, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{flight.name}</div>
