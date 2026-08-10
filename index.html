@@ -1026,27 +1026,18 @@ function PublicLeaderboard({ tournament, err }) {
           </div>
         )}
 
-        <div style={{ display: 'flex', gap: 6, padding: '12px 16px 6px', borderBottom: showNettoCM ? 'none' : `1px solid ${C.line}`, overflowX: 'auto' }}>
-          {classIds.filter(c => c !== NETTO_CM_ID).map(c => {
+        <div style={{ display: 'flex', gap: 6, padding: '12px 16px', borderBottom: `1px solid ${C.line}`, overflowX: 'auto' }}>
+          {classIds.map(c => {
             const bc = bruttoClasses.find(x => x.id === c);
+            const label = c === NETTO_CM_ID ? 'Netto-Klubmeisterschaft' : (bc ? bc.label : (m.classificationMode === 'fixed' ? c : `Netto ${c}`));
             return (
             <button key={c} onClick={() => setActiveClass(c)}
               style={{ flexShrink: 0, fontSize: 12, padding: '5px 12px', borderRadius: 6, border: `1px solid ${activeClass === c ? C.ink : C.line}`, background: activeClass === c ? C.ink : '#fff', color: activeClass === c ? '#fff' : C.ink, cursor: 'pointer' }}>
-              {bc ? bc.label : (m.classificationMode === 'fixed' ? c : `Netto ${c}`)}
+              {label}
             </button>
             );
           })}
         </div>
-
-        {showNettoCM && (
-          <div style={{ padding: '6px 16px 12px', borderBottom: `1px solid ${C.line}` }}>
-            <div style={{ fontSize: 10, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 6 }}>Sonderwertung</div>
-            <button onClick={() => setActiveClass(NETTO_CM_ID)}
-              style={{ fontSize: 12, padding: '5px 12px', borderRadius: 6, border: `1px solid ${activeClass === NETTO_CM_ID ? C.gold : C.line}`, background: activeClass === NETTO_CM_ID ? C.gold : '#fff', color: activeClass === NETTO_CM_ID ? '#fff' : C.ink, cursor: 'pointer', fontWeight: 600 }}>
-              🏅 Netto-Klubmeisterschaft
-            </button>
-          </div>
-        )}
 
         {excludedNote && (
           <div style={{ padding: '8px 20px', fontSize: 11, color: C.muted, background: C.board, borderBottom: `1px solid ${C.line}` }}>
@@ -1214,25 +1205,59 @@ function SoloEntry({ tournament, flightId, reload }) {
   const m = tournament.meta;
   const flight = tournament.flights[flightId];
   const players = (flight.playerIds || []).map(id => ({ id, ...tournament.players[id] }));
-  // Bei fester Klassifizierung spielt jede Klasse ggf. eine andere Rundenanzahl (z. B. Herren 3, Damen 2) –
-  // die Runden-Auswahl hier richtet sich nach der Klasse des ersten Flight-Mitglieds.
-  const flightClass = (players[0] && players[0].classes && players[0].classes[0]) || null;
-  const flightRounds = m.classificationMode === 'fixed' && flightClass ? classRoundsFor(m, flightClass) : (m.rounds || []);
-  const [round, setRound] = useState((flightRounds[flightRounds.length - 1] || m.rounds[m.rounds.length - 1]).id);
+  const allFlightScores = (tournament.scores && tournament.scores[flightId]) || {};
+
+  // Jeder Spieler hat (bei fester Klassifizierung) seine eigene Rundenliste, abhängig von seiner Klasse
+  // (z. B. Herren 3 Runden, Damen 2 Runden) – wichtig bei gemischten Flights.
+  const playerRoundIds = (p) => {
+    const cls = p.classes && p.classes[0];
+    return m.classificationMode === 'fixed' && cls ? classRoundIdsFor(m, cls) : (m.rounds || []).map(r => r.id);
+  };
+  const isPlayerRoundComplete = (p, roundId) => {
+    const s = (allFlightScores[roundId] && allFlightScores[roundId][p.id]) || {};
+    for (let h = 1; h <= m.holes; h++) { if (!isEntered(s[h - 1])) return false; }
+    return true;
+  };
+  // Eine Runde ist für einen Spieler erst freigeschaltet, wenn seine eigene vorherige Runde
+  // komplett eingetragen ist – Runde 3 z. B. darf nicht vor Abschluss von Runde 1+2 bespielt werden.
+  const isRoundUnlockedForPlayer = (p, roundId) => {
+    const ids = playerRoundIds(p);
+    const idx = ids.indexOf(roundId);
+    if (idx <= 0) return true;
+    return isPlayerRoundComplete(p, ids[idx - 1]);
+  };
+
+  // Runden-Tabs: Vereinigung aller Runden, die für irgendein Flight-Mitglied relevant sind.
+  const unionRoundIds = [...new Set(players.flatMap(playerRoundIds))];
+  const flightRounds = (m.rounds || []).filter(r => unionRoundIds.includes(r.id));
+
+  // Sinnvoller Start: die früheste Runde, die noch nicht von allen berechtigten Spielern
+  // abgeschlossen ist – sonst die letzte Runde.
+  const defaultRound = (() => {
+    for (const r of flightRounds) {
+      const eligible = players.filter(p => playerRoundIds(p).includes(r.id));
+      if (eligible.some(p => !isPlayerRoundComplete(p, r.id))) return r.id;
+    }
+    return flightRounds.length ? flightRounds[flightRounds.length - 1].id : (m.rounds[m.rounds.length - 1] || {}).id;
+  })();
+
+  const [round, setRound] = useState(defaultRound);
   const [hole, setHole] = useState(1);
   const scores = (tournament.scores && tournament.scores[flightId] && tournament.scores[flightId][round]) || {};
+
+  // Nur Spieler, für die diese Runde überhaupt zählt (z. B. keine Damen-Zeile in Runde 3).
+  const eligiblePlayers = players.filter(p => playerRoundIds(p).includes(round));
 
   const setScore = async (playerId, val) => {
     await fbPatch(`tournament/scores/${flightId}/${round}/${playerId}`, { [hole - 1]: val });
     await reload();
   };
 
-  // Übernimmt automatisch Par für alle Spieler, die an diesem Loch noch nichts eingetragen haben,
-  // sobald man weiterblättert (Pfeile oder Lochpunkte) – so geht kein Ergebnis mehr "verloren",
-  // nur weil niemand aktiv auf +/- getippt hat.
+  // Übernimmt automatisch Par für alle berechtigten, nicht gesperrten Spieler, die an diesem Loch
+  // noch nichts eingetragen haben, sobald man weiterblättert.
   const commitDefaultsAndGo = async (targetHole) => {
     const parVal = courseFor(m.holes).pars[hole - 1];
-    const missing = players.filter(p => !isEntered(scores[p.id] && scores[p.id][hole - 1]));
+    const missing = eligiblePlayers.filter(p => isRoundUnlockedForPlayer(p, round) && !isEntered(scores[p.id] && scores[p.id][hole - 1]));
     if (missing.length > 0) {
       await Promise.all(missing.map(p => fbPatch(`tournament/scores/${flightId}/${round}/${p.id}`, { [hole - 1]: parVal })));
       await reload();
@@ -1240,9 +1265,8 @@ function SoloEntry({ tournament, flightId, reload }) {
     setHole(targetHole);
   };
 
-  // Prüft für JEDES Loch einzeln, ob alle Flight-Mitglieder eingetragen haben – nicht nur einen
-  // durchgehenden Block ab Loch 1, damit auch nachträglich/außer der Reihe befüllte Löcher korrekt markiert werden.
-  const isHoleFilled = (h) => players.every(p => {
+  // Prüft für JEDES Loch einzeln, ob alle berechtigten Flight-Mitglieder eingetragen haben.
+  const isHoleFilled = (h) => eligiblePlayers.length > 0 && eligiblePlayers.every(p => {
     const ps = (scores[p.id]) || {};
     return isEntered(ps[h - 1]);
   });
@@ -1260,12 +1284,16 @@ function SoloEntry({ tournament, flightId, reload }) {
           <div style={{ fontSize: 11, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{flight.name}</div>
           {flightRounds.length > 1 && (
             <div style={{ display: 'flex', gap: 6, justifyContent: 'center', marginTop: 8 }}>
-              {flightRounds.map(r => (
-                <button key={r.id} onClick={() => setRound(r.id)}
-                  style={{ fontSize: 12, padding: '5px 12px', borderRadius: 6, border: `1px solid ${round === r.id ? C.ink : C.line}`, background: round === r.id ? C.ink : '#fff', color: round === r.id ? '#fff' : C.ink, cursor: 'pointer' }}>
-                  {r.label}
-                </button>
-              ))}
+              {flightRounds.map(r => {
+                const eligibleForR = players.filter(p => playerRoundIds(p).includes(r.id));
+                const anyUnlocked = eligibleForR.some(p => isRoundUnlockedForPlayer(p, r.id));
+                return (
+                  <button key={r.id} onClick={() => anyUnlocked && setRound(r.id)} disabled={!anyUnlocked}
+                    style={{ fontSize: 12, padding: '5px 12px', borderRadius: 6, border: `1px solid ${round === r.id ? C.ink : C.line}`, background: round === r.id ? C.ink : '#fff', color: !anyUnlocked ? C.muted : (round === r.id ? '#fff' : C.ink), cursor: anyUnlocked ? 'pointer' : 'not-allowed', opacity: anyUnlocked ? 1 : 0.5 }}>
+                    {anyUnlocked ? r.label : `🔒 ${r.label}`}
+                  </button>
+                );
+              })}
             </div>
           )}
           <div style={{ display: 'flex', gap: 5, justifyContent: 'center', marginTop: 10, flexWrap: 'wrap' }}>
@@ -1289,11 +1317,26 @@ function SoloEntry({ tournament, flightId, reload }) {
         </div>
 
         <div style={{ padding: '4px 18px 18px', display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {players.map(p => {
+          {eligiblePlayers.length === 0 && (
+            <div style={{ fontSize: 12, color: C.muted, textAlign: 'center', padding: '10px 0' }}>Für diese Runde sind keine Spieler dieses Flights vorgesehen.</div>
+          )}
+          {eligiblePlayers.map(p => {
             const raw = scores[p.id] && scores[p.id][hole - 1];
             const struck = raw === STRICH;
             const cur = isNumericScore(raw) ? Number(raw) : courseFor(m.holes).pars[hole - 1];
             const playerSi = courseFor(m.holes).si[hole - 1];
+            const unlocked = isRoundUnlockedForPlayer(p, round);
+            if (!unlocked) {
+              return (
+                <div key={p.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', background: C.board, borderRadius: 8, opacity: 0.6 }}>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 500 }}>{p.name}</div>
+                    <div style={{ fontSize: 10, color: C.muted }}>Hcp {p.hcp} · Tee {p.tee || TEE_IDS[0]}</div>
+                  </div>
+                  <span style={{ fontSize: 11, color: C.muted }}>🔒 vorherige Runde noch offen</span>
+                </div>
+              );
+            }
             return (
               <div key={p.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', background: C.board, borderRadius: 8 }}>
                 <div>
