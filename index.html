@@ -298,13 +298,16 @@ function TournamentSetup({ tournament, reload }) {
   const [type, setType] = useState(m.type || 'clubmeisterschaft');
   const [holes, setHoles] = useState(m.holes || 18);
   const [classificationMode, setClassificationMode] = useState(m.classificationMode || (type === 'clubmeisterschaft' ? 'fixed' : 'hcp'));
-  const [hcpClasses, setHcpClasses] = useState(m.hcpClasses || [{ id: 'A', from: 0, to: 8 }, { id: 'B', from: 8.1, to: 16 }]);
+  const [hcpClasses, setHcpClasses] = useState(m.hcpClasses || [{ id: 'A', from: 0, to: 8, prizeCount: 3 }, { id: 'B', from: 8.1, to: 16, prizeCount: 3 }]);
   const [rounds, setRounds] = useState(m.rounds || [{ id: 1, label: 'Runde 1' }, { id: 2, label: 'Runde 2' }]);
   const [scoringMode, setScoringMode] = useState(m.scoringMode || ((m.type || 'clubmeisterschaft') === 'clubmeisterschaft' || (m.type || '') === 'masters' ? 'strokeplay_net' : 'stableford'));
   const [adminPin, setAdminPin] = useState(m.adminPin || '2026');
   const [herrenTee, setHerrenTee] = useState(m.herrenTee || 'Weiß');
   const [damenTee, setDamenTee] = useState(m.damenTee || 'Blau');
-  const [prizeCount, setPrizeCount] = useState(m.prizeCount || 3);
+  const [bruttoSplit, setBruttoSplit] = useState(!!(m.bruttoClasses && m.bruttoClasses.length === 2));
+  const [bruttoPrizeCombined, setBruttoPrizeCombined] = useState((m.bruttoClasses && m.bruttoClasses.length === 1 && m.bruttoClasses[0].prizeCount) || m.prizeCount || 3);
+  const [bruttoPrizeHerren, setBruttoPrizeHerren] = useState((m.bruttoClasses && m.bruttoClasses.find(c => c.gender === 'm') || {}).prizeCount || 3);
+  const [bruttoPrizeDamen, setBruttoPrizeDamen] = useState((m.bruttoClasses && m.bruttoClasses.find(c => c.gender === 'w') || {}).prizeCount || 3);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
@@ -331,7 +334,7 @@ function TournamentSetup({ tournament, reload }) {
   const updateSi = (i, val) => setSi(prev => { const a = [...prev]; a[i] = Number(val) || 1; return a; });
 
   const setHcpCount = (n) => {
-    const next = HCP_LETTERS.slice(0, n).map((letter, i) => hcpClasses[i] || { id: letter, from: '', to: '' });
+    const next = HCP_LETTERS.slice(0, n).map((letter, i) => hcpClasses[i] || { id: letter, from: '', to: '', prizeCount: 3 });
     setHcpClasses(next);
   };
   const updateCutoff = (i, field, val) => {
@@ -349,6 +352,12 @@ function TournamentSetup({ tournament, reload }) {
 
   const save = async () => {
     setSaving(true);
+    const bruttoClasses = bruttoSplit
+      ? [
+          { id: 'BruttoHerren', label: 'Brutto Herren', gender: 'm', prizeCount: bruttoPrizeHerren },
+          { id: 'BruttoDamen', label: 'Brutto Damen', gender: 'w', prizeCount: bruttoPrizeDamen },
+        ]
+      : [{ id: 'Brutto', label: 'Brutto', prizeCount: bruttoPrizeCombined }];
     const meta = {
       name, type, holes, classificationMode,
       fixedClasses: FIXED_CLASSES,
@@ -357,7 +366,7 @@ function TournamentSetup({ tournament, reload }) {
       scoringMode,
       pars, si,
       herrenTee, damenTee,
-      prizeCount,
+      bruttoClasses,
     };
     await fbPatch('tournament/meta', meta);
     await reload();
@@ -404,7 +413,37 @@ function TournamentSetup({ tournament, reload }) {
         </div>
       </Field>
 
-      <Field label={type === 'clubmeisterschaft' ? 'Klassifizierung (automatisch)' : 'Klassifizierung'}>
+      <Field label="Brutto-Wertung">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+          <input type="checkbox" checked={bruttoSplit} onChange={e => setBruttoSplit(e.target.checked)} id="bruttoSplit" />
+          <label htmlFor="bruttoSplit" style={{ fontSize: 13, color: C.inkDim }}>Brutto nach Geschlecht trennen (Herren/Damen getrennt gewertet)</label>
+        </div>
+        {bruttoSplit ? (
+          <div style={{ display: 'flex', gap: 16 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontSize: 13, color: C.inkDim }}>Preise Brutto Herren</span>
+              <select value={bruttoPrizeHerren} onChange={e => setBruttoPrizeHerren(Number(e.target.value))} style={{ ...inputStyle, width: 70 }}>
+                {[1, 2, 3].map(n => <option key={n} value={n}>{n}</option>)}
+              </select>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontSize: 13, color: C.inkDim }}>Preise Brutto Damen</span>
+              <select value={bruttoPrizeDamen} onChange={e => setBruttoPrizeDamen(Number(e.target.value))} style={{ ...inputStyle, width: 70 }}>
+                {[1, 2, 3].map(n => <option key={n} value={n}>{n}</option>)}
+              </select>
+            </div>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 13, color: C.inkDim }}>Preise Brutto (gesamt)</span>
+            <select value={bruttoPrizeCombined} onChange={e => setBruttoPrizeCombined(Number(e.target.value))} style={{ ...inputStyle, width: 70 }}>
+              {[1, 2, 3].map(n => <option key={n} value={n}>{n}</option>)}
+            </select>
+          </div>
+        )}
+      </Field>
+
+      <Field label={type === 'clubmeisterschaft' ? 'Klassifizierung (automatisch)' : 'Netto-Wertung: Handicap-Klassen'}>
         {classificationMode === 'fixed' ? (
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             {FIXED_CLASSES.map(c => <span key={c} style={badgeStyle}>{c}</span>)}
@@ -423,6 +462,10 @@ function TournamentSetup({ tournament, reload }) {
                 <input type="number" placeholder="von" value={c.from} onChange={e => updateCutoff(i, 'from', e.target.value)} style={{ ...inputStyle, width: 80 }} />
                 <span style={{ fontSize: 12, color: C.muted }}>bis</span>
                 <input type="number" placeholder="bis" value={c.to} onChange={e => updateCutoff(i, 'to', e.target.value)} style={{ ...inputStyle, width: 80 }} />
+                <span style={{ fontSize: 12, color: C.muted, marginLeft: 8 }}>Preise</span>
+                <select value={c.prizeCount || 3} onChange={e => updateCutoff(i, 'prizeCount', Number(e.target.value))} style={{ ...inputStyle, width: 60 }}>
+                  {[1, 2, 3].map(n => <option key={n} value={n}>{n}</option>)}
+                </select>
               </div>
             ))}
           </div>
@@ -446,7 +489,10 @@ function TournamentSetup({ tournament, reload }) {
 
       <Field label="Platzkarte: Par & Vorgabe (Stroke Index)">
         <div style={{ fontSize: 12, color: C.muted, marginBottom: 10 }}>Gilt für alle vier Tees (Weiß/Gelb/Blau/Rot) gleichermaßen. Die eigentliche Course-Handicap-Zahl kommt pro Spieler aus der Startliste.</div>
-        <div style={{ fontSize: 11, fontWeight: 600, color: C.inkDim, marginBottom: 4 }}>Par</div>
+        <div style={{ fontSize: 11, fontWeight: 600, color: C.inkDim, marginBottom: 4, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <span>Par</span>
+          <button type="button" onClick={() => { setPars(holes === 18 ? DEFAULT_PARS_18 : DEFAULT_PARS_9); setSi(holes === 18 ? DEFAULT_SI_18 : DEFAULT_SI_9); }} style={{ ...smallBtn, padding: '3px 8px', fontSize: 10 }}>GC-Landshut-Standardwerte laden</button>
+        </div>
         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 10 }}>
           {pars.map((v, i) => (
             <input key={i} type="number" value={v} onChange={e => updatePar(i, e.target.value)}
@@ -467,15 +513,6 @@ function TournamentSetup({ tournament, reload }) {
 
       <Field label="Admin-PIN">
         <input value={adminPin} onChange={e => setAdminPin(e.target.value)} style={{ ...inputStyle, width: 140 }} />
-      </Field>
-
-      <Field label="Preisränge pro Wertungsklasse">
-        <select value={prizeCount} onChange={e => setPrizeCount(Number(e.target.value))} style={{ ...inputStyle, width: 140 }}>
-          <option value={1}>1 Preis</option>
-          <option value={2}>2 Preise</option>
-          <option value={3}>3 Preise</option>
-        </select>
-        <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>Bestimmt, wie viele Plätze in der Live-Rangliste farblich hervorgehoben werden (1. Platz am stärksten).</div>
       </Field>
 
       <button onClick={save} disabled={saving} style={{ padding: '11px 20px', background: C.ink, color: '#fff', border: 'none', borderRadius: 6, fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>
@@ -686,7 +723,14 @@ function PublicLeaderboard({ tournament, err }) {
   const flights = tournament.flights || {};
   const scores = tournament.scores || {};
 
-  const classIds = m.classificationMode === 'fixed' ? m.fixedClasses : ['Brutto', ...m.hcpClasses.map(c => c.id)];
+  // Brutto- und Netto-Klassen mit jeweils eigener Preisrang-Anzahl. Abwärtskompatibel: falls noch keine
+  // bruttoClasses gespeichert sind (ältere Turniere), wird eine einzelne kombinierte Brutto-Klasse angenommen.
+  const bruttoClasses = m.bruttoClasses || [{ id: 'Brutto', label: 'Brutto', prizeCount: m.prizeCount || 3 }];
+  const hcpClassesWithPrize = (m.hcpClasses || []).map(c => ({ ...c, prizeCount: c.prizeCount || 3 }));
+
+  const classIds = m.classificationMode === 'fixed'
+    ? m.fixedClasses
+    : [...bruttoClasses.map(c => c.id), ...hcpClassesWithPrize.map(c => c.id)];
   const [activeClass, setActiveClass] = useState(classIds[0]);
   const [activeRound, setActiveRound] = useState((m.rounds && m.rounds[m.rounds.length - 1].id) || 1);
   const [detailPlayer, setDetailPlayer] = useState(null);
@@ -770,37 +814,47 @@ function PublicLeaderboard({ tournament, err }) {
 
   const fmtToPar = (v) => v === null ? '–' : v === 0 ? 'E' : v > 0 ? '+' + v : String(v);
 
-  // Übergreifender Brutto-Sieger (für die Ausschluss-Regel: wer Brutto gewinnt, kann nicht auch Netto-Sieger sein)
-  const bruttoLeaderId = (() => {
+  // Ermittelt den Brutto-Sieger für eine bestimmte Brutto-Klasse (ggf. nach Geschlecht gefiltert),
+  // für die Ausschluss-Regel: wer Brutto gewinnt, kann in der zugehörigen Netto-Klasse nicht auch Sieger sein.
+  const bruttoLeaderIdFor = (geschlecht) => {
     if (!isStableford) return null;
-    const candidates = rows.filter(r => r.grossPts !== null).sort((a, b) => b.grossPts - a.grossPts);
+    const relevantClass = bruttoClasses.find(c => !c.gender || c.gender === geschlecht) || bruttoClasses[0];
+    const candidates = rows
+      .filter(r => r.grossPts !== null && (!relevantClass.gender || r.geschlecht === relevantClass.gender))
+      .sort((a, b) => b.grossPts - a.grossPts);
     return candidates.length ? candidates[0].id : null;
-  })();
+  };
+
+  const activeBruttoClass = bruttoClasses.find(c => c.id === activeClass);
+  const activeHcpClass = hcpClassesWithPrize.find(c => c.id === activeClass);
 
   let visibleRows;
   if (m.classificationMode === 'fixed') {
     visibleRows = rows.filter(r => (r.classes || []).includes(activeClass));
     visibleRows.sort((a, b) => isStableford ? (b.netPts ?? -1) - (a.netPts ?? -1) : (a.netToPar ?? 999) - (b.netToPar ?? 999));
-  } else if (activeClass === 'Brutto') {
-    visibleRows = rows.filter(r => isStableford ? r.grossPts !== null : r.gross !== null);
+  } else if (activeBruttoClass) {
+    visibleRows = rows.filter(r => (isStableford ? r.grossPts !== null : r.gross !== null) && (!activeBruttoClass.gender || r.geschlecht === activeBruttoClass.gender));
     visibleRows.sort((a, b) => isStableford ? (b.grossPts ?? -1) - (a.grossPts ?? -1) : (a.grossToPar ?? 999) - (b.grossToPar ?? 999));
   } else {
-    visibleRows = rows.filter(r => playerHcpClass(r.hcp, m.hcpClasses) === activeClass);
+    visibleRows = rows.filter(r => playerHcpClass(r.hcp, hcpClassesWithPrize) === activeClass);
     visibleRows.sort((a, b) => isStableford ? (b.netPts ?? -1) - (a.netPts ?? -1) : (a.netToPar ?? 999) - (b.netToPar ?? 999));
   }
 
-  // Ausschluss-Regel anwenden: wenn der Tabellenführer dieser Netto-Ansicht der Brutto-Gesamtsieger ist,
-  // wandert die Sieger-Markierung auf den nächstplatzierten Spieler.
+  // Ausschluss-Regel anwenden: wenn der Tabellenführer dieser Netto-Ansicht der (ggf. geschlechtsspezifische)
+  // Brutto-Sieger ist, wandert die Sieger-Markierung auf den nächstplatzierten Spieler.
   let leaderIndex = visibleRows.length > 0 ? 0 : -1;
   let excludedNote = null;
-  if (isStableford && activeClass !== 'Brutto' && leaderIndex === 0 && visibleRows[0] && visibleRows[0].id === bruttoLeaderId && visibleRows.length > 1) {
-    excludedNote = visibleRows[0].name;
-    leaderIndex = 1;
+  if (isStableford && activeHcpClass && leaderIndex === 0 && visibleRows[0] && visibleRows.length > 1) {
+    const relevantBruttoLeader = bruttoLeaderIdFor(visibleRows[0].geschlecht);
+    if (visibleRows[0].id === relevantBruttoLeader) {
+      excludedNote = visibleRows[0].name;
+      leaderIndex = 1;
+    }
   }
 
-  // Preisränge: 1.–3. Platz farblich abgestuft hervorgehoben, Anzahl je nach Admin-Einstellung.
+  // Preisränge: 1.–3. Platz farblich abgestuft hervorgehoben, Anzahl je nach Klassen-Einstellung.
   // Ein durch die Ausschluss-Regel übersprungener Platz zählt nicht als Preisrang mit.
-  const prizeCount = m.prizeCount || 3;
+  const prizeCount = (activeBruttoClass || activeHcpClass || {}).prizeCount || 3;
   const PRIZE_TIERS = [
     { bg: 'rgba(29,122,76,0.24)', color: C.green, weight: 700, size: 17 },
     { bg: 'rgba(29,122,76,0.14)', color: C.green, weight: 600, size: 16 },
@@ -843,12 +897,15 @@ function PublicLeaderboard({ tournament, err }) {
         )}
 
         <div style={{ display: 'flex', gap: 6, padding: '12px 16px', borderBottom: `1px solid ${C.line}`, overflowX: 'auto' }}>
-          {classIds.map(c => (
+          {classIds.map(c => {
+            const bc = bruttoClasses.find(x => x.id === c);
+            return (
             <button key={c} onClick={() => setActiveClass(c)}
               style={{ flexShrink: 0, fontSize: 12, padding: '5px 12px', borderRadius: 6, border: `1px solid ${activeClass === c ? C.ink : C.line}`, background: activeClass === c ? C.ink : '#fff', color: activeClass === c ? '#fff' : C.ink, cursor: 'pointer' }}>
-              {c}
+              {bc ? bc.label : c}
             </button>
-          ))}
+            );
+          })}
         </div>
 
         {excludedNote && (
@@ -866,7 +923,7 @@ function PublicLeaderboard({ tournament, err }) {
               <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
                 <span style={{ fontSize: 13, color: C.muted, width: 18, fontWeight: 600 }}>{i + 1}</span>
                 <div>
-                  <div style={{ fontSize: tier ? tier.size : 15, fontWeight: tier ? tier.weight : 500, color: tier ? tier.color : C.ink }}>{r.name}{isStableford && r.id === bruttoLeaderId && activeClass !== 'Brutto' ? ' 🏆' : ''}</div>
+                  <div style={{ fontSize: tier ? tier.size : 15, fontWeight: tier ? tier.weight : 500, color: tier ? tier.color : C.ink }}>{r.name}{isStableford && activeHcpClass && r.id === bruttoLeaderIdFor(r.geschlecht) ? ' 🏆' : ''}</div>
                   <div style={{ fontSize: 11, color: C.muted }}>Hcp {r.hcp} · {r.thru}/{m.holes} Loch</div>
                 </div>
               </div>
@@ -874,7 +931,7 @@ function PublicLeaderboard({ tournament, err }) {
                 {isStableford ? (
                   <>
                     <div style={{ fontSize: tier ? tier.size : 16, fontWeight: tier ? tier.weight : 600, color: tier ? tier.color : C.ink }}>
-                      {(activeClass === 'Brutto' ? r.grossPts : r.netPts) ?? '–'} Pkt.
+                      {(activeBruttoClass ? r.grossPts : r.netPts) ?? '–'} Pkt.
                     </div>
                     <div style={{ fontSize: 10, color: C.muted }}>
                       GBE {r.gbe === null ? '–' : r.gbe}
@@ -883,10 +940,10 @@ function PublicLeaderboard({ tournament, err }) {
                 ) : (
                   <>
                     <div style={{ fontSize: tier ? tier.size : 16, fontWeight: tier ? tier.weight : 600, color: tier ? tier.color : C.ink }}>
-                      {activeClass === 'Brutto' ? fmtToPar(r.grossToPar) : fmtToPar(r.netToPar)}
+                      {activeBruttoClass ? fmtToPar(r.grossToPar) : fmtToPar(r.netToPar)}
                     </div>
                     <div style={{ fontSize: 10, color: C.muted }}>
-                      {activeClass === 'Brutto' ? (r.gross ?? '–') : (r.net ?? '–')} schläge
+                      {activeBruttoClass ? (r.gross ?? '–') : (r.net ?? '–')} schläge
                     </div>
                   </>
                 )}
