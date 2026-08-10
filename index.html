@@ -72,27 +72,42 @@ const TOURNAMENT_TYPES = [
 ];
 const FIXED_CLASSES = ['Herren', 'Damen', 'AK30', 'AK50', 'AK65'];
 const HCP_LETTERS = ['A', 'B', 'C', 'D'];
-const TEES = ['Weiß', 'Gelb', 'Blau', 'Rot']; // Herren: Weiß/Gelb · Damen: Blau/Rot – jeweils eigene Vorgabe (Stroke Index)
+// Alle vier Tees teilen sich dieselbe Par-/Index-Karte, nur der CR-Wert unterscheidet sich
+// (die daraus resultierende Vorgabe kommt bereits fertig aus der Startliste pro Spieler).
+const TEES = [
+  { id: 'Weiß', cr: '72.8' },
+  { id: 'Gelb', cr: '71.1' },
+  { id: 'Blau', cr: '74.5' },
+  { id: 'Rot', cr: '72.4' },
+];
+const TEE_IDS = TEES.map(t => t.id);
 
-const DEFAULT_PARS_18 = [4,4,3,5,4,4,3,5,4, 4,3,4,5,4,4,3,5,4];
-const DEFAULT_SI_18   = [7,3,15,1,11,5,17,9,13, 8,14,2,10,4,6,18,12,16];
+const DEFAULT_PARS_18 = [4,4,5,5,4,3,5,3,4, 4,4,5,4,3,5,3,4,4]; // GC Landshut
+const DEFAULT_SI_18   = [9,5,11,7,15,3,13,1,17, 8,14,18,12,10,16,6,4,2]; // GC Landshut
 const DEFAULT_PARS_9 = DEFAULT_PARS_18.slice(0,9);
-const DEFAULT_SI_9 = [5,1,9,3,7,4,8,2,6];
+const DEFAULT_SI_9 = [5,3,7,4,9,1,8,6,2]; // Behelfswerte für 9-Loch, bis echte 9-Loch-Karte vorliegt
 
 function newId() { return Math.random().toString(36).slice(2, 9); }
 function genToken() { return Math.random().toString(36).slice(2, 10); }
 function genPassword() { return Math.floor(1000 + Math.random() * 9000).toString(); }
 
+// Schläge, die ein Spieler an einem Loch bekommt (oder bei Plus-Handicap abgeben muss).
+// Positive Vorgabe: Schläge werden ab dem schwersten Loch (niedrigster Stroke Index) vergeben.
+// Negative Vorgabe (Plus-Spieler): Schläge werden ab dem leichtesten Loch (höchster Stroke Index)
+// abgezogen – das entspricht der offiziellen WHS-Regel für Plus-Handicaps.
 function strokesOnHole(hcp, si, holesCount) {
-  const base = Math.floor(hcp / holesCount);
-  const extra = si <= (hcp % holesCount) ? 1 : 0;
-  return base + extra;
-}
-
-// Holt das Stroke-Index-Array für das jeweilige Abschlag-Tee des Spielers (Fallback: erstes Tee).
-function siForTee(meta, tee) {
-  const t = tee && meta.teeSi && meta.teeSi[tee] ? tee : TEES[0];
-  return (meta.teeSi && meta.teeSi[t]) || meta.si;
+  const rounded = Math.round(hcp);
+  if (rounded >= 0) {
+    const base = Math.floor(rounded / holesCount);
+    const remainder = rounded - base * holesCount;
+    return base + (si <= remainder ? 1 : 0);
+  } else {
+    const a = -rounded;
+    const base = Math.floor(a / holesCount);
+    const remainder = a - base * holesCount;
+    const extra = si > (holesCount - remainder) ? 1 : 0;
+    return -(base + extra);
+  }
 }
 
 const STRICH = 'X'; // Markierung für "Loch aufgegeben"
@@ -302,23 +317,15 @@ function TournamentSetup({ tournament, reload }) {
     if (!scoringModeTouched.current) setScoringMode(suggestScoringMode(type));
   }, [type]);
 
-  const [teeSi, setTeeSi] = useState(m.teeSi || Object.fromEntries(TEES.map(t => [t, holes === 18 ? DEFAULT_SI_18 : DEFAULT_SI_9])));
+  // Eine Platzkarte für alle vier Tees (Par + Index identisch, nur CR/Vorgabe unterscheidet sich je Tee).
+  const [pars, setPars] = useState(m.pars || (holes === 18 ? DEFAULT_PARS_18 : DEFAULT_PARS_9));
+  const [si, setSi] = useState(m.si || (holes === 18 ? DEFAULT_SI_18 : DEFAULT_SI_9));
   useEffect(() => {
-    setTeeSi(prev => {
-      const targetLen = holes;
-      const needsReset = TEES.some(t => !prev[t] || prev[t].length !== targetLen);
-      if (!needsReset) return prev;
-      const fallback = holes === 18 ? DEFAULT_SI_18 : DEFAULT_SI_9;
-      return Object.fromEntries(TEES.map(t => [t, (prev[t] && prev[t].length === targetLen) ? prev[t] : fallback]));
-    });
+    if (pars.length !== holes) setPars(holes === 18 ? DEFAULT_PARS_18 : DEFAULT_PARS_9);
+    if (si.length !== holes) setSi(holes === 18 ? DEFAULT_SI_18 : DEFAULT_SI_9);
   }, [holes]);
-  const updateTeeSiHole = (tee, holeIdx, val) => {
-    setTeeSi(prev => {
-      const arr = [...(prev[tee] || (holes === 18 ? DEFAULT_SI_18 : DEFAULT_SI_9))];
-      arr[holeIdx] = Number(val) || 1;
-      return { ...prev, [tee]: arr };
-    });
-  };
+  const updatePar = (i, val) => setPars(prev => { const a = [...prev]; a[i] = Number(val) || 1; return a; });
+  const updateSi = (i, val) => setSi(prev => { const a = [...prev]; a[i] = Number(val) || 1; return a; });
 
   const setHcpCount = (n) => {
     const next = HCP_LETTERS.slice(0, n).map((letter, i) => hcpClasses[i] || { id: letter, from: '', to: '' });
@@ -339,16 +346,13 @@ function TournamentSetup({ tournament, reload }) {
 
   const save = async () => {
     setSaving(true);
-    const pars = holes === 18 ? DEFAULT_PARS_18 : DEFAULT_PARS_9;
-    const si = holes === 18 ? DEFAULT_SI_18 : DEFAULT_SI_9;
     const meta = {
       name, type, holes, classificationMode,
       fixedClasses: FIXED_CLASSES,
       hcpClasses: classificationMode === 'hcp' ? hcpClasses : [],
       rounds, adminPin,
       scoringMode,
-      pars: m.pars || pars, si: m.si || si,
-      teeSi,
+      pars, si,
     };
     await fbPatch('tournament/meta', meta);
     await reload();
@@ -420,23 +424,26 @@ function TournamentSetup({ tournament, reload }) {
         )}
       </Field>
 
-      <Field label="Vorgabe (Stroke Index) je Abschlag">
-        <div style={{ fontSize: 12, color: C.muted, marginBottom: 10 }}>Herren: Weiß/Gelb · Damen: Blau/Rot — je Tee eigene Reihenfolge, damit die Netto-Berechnung stimmt.</div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {TEES.map(tee => (
-            <div key={tee}>
-              <div style={{ fontSize: 12, fontWeight: 600, color: C.inkDim, marginBottom: 4 }}>{tee}</div>
-              <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                {(teeSi[tee] || []).map((v, i) => (
-                  <input key={i} type="number" value={v} onChange={e => updateTeeSiHole(tee, i, e.target.value)}
-                    title={`Loch ${i + 1}`}
-                    style={{ width: 34, padding: '4px 2px', textAlign: 'center', fontSize: 11, border: `1px solid ${C.line}`, borderRadius: 4 }} />
-                ))}
-              </div>
-            </div>
+      <Field label="Platzkarte: Par & Vorgabe (Stroke Index)">
+        <div style={{ fontSize: 12, color: C.muted, marginBottom: 10 }}>Gilt für alle vier Tees (Weiß/Gelb/Blau/Rot) gleichermaßen. Die eigentliche Course-Handicap-Zahl kommt pro Spieler aus der Startliste.</div>
+        <div style={{ fontSize: 11, fontWeight: 600, color: C.inkDim, marginBottom: 4 }}>Par</div>
+        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 10 }}>
+          {pars.map((v, i) => (
+            <input key={i} type="number" value={v} onChange={e => updatePar(i, e.target.value)}
+              title={`Par Loch ${i + 1}`}
+              style={{ width: 34, padding: '4px 2px', textAlign: 'center', fontSize: 11, border: `1px solid ${C.line}`, borderRadius: 4, background: C.board }} />
+          ))}
+        </div>
+        <div style={{ fontSize: 11, fontWeight: 600, color: C.inkDim, marginBottom: 4 }}>Vorgabe (Index)</div>
+        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+          {si.map((v, i) => (
+            <input key={i} type="number" value={v} onChange={e => updateSi(i, e.target.value)}
+              title={`Index Loch ${i + 1}`}
+              style={{ width: 34, padding: '4px 2px', textAlign: 'center', fontSize: 11, border: `1px solid ${C.line}`, borderRadius: 4 }} />
           ))}
         </div>
       </Field>
+      <div style={{ fontSize: 10, color: C.muted, marginTop: -10, marginBottom: 14 }}>Loch 1–{holes}.</div>
 
       <Field label="Admin-PIN">
         <input value={adminPin} onChange={e => setAdminPin(e.target.value)} style={{ ...inputStyle, width: 140 }} />
@@ -455,7 +462,7 @@ function PlayerAdmin({ tournament, reload }) {
   const [name, setName] = useState('');
   const [hcp, setHcp] = useState('');
   const [cls, setCls] = useState(meta.classificationMode === 'fixed' ? FIXED_CLASSES[0] : '');
-  const [tee, setTee] = useState(TEES[0]);
+  const [tee, setTee] = useState(TEE_IDS[0]);
   const fileRef = useRef(null);
 
   const addPlayer = async () => {
@@ -489,7 +496,7 @@ function PlayerAdmin({ tournament, reload }) {
         const pname = parts[0], phcp = parts[1];
         let idx = 2;
         const pcls = isFixed ? parts[idx++] : undefined;
-        const ptee = TEES.includes(parts[idx]) ? parts[idx++] : TEES[0];
+        const ptee = TEE_IDS.includes(parts[idx]) ? parts[idx++] : TEE_IDS[0];
         const pflight = parts[idx];
         if (!pname || phcp === undefined) return;
         const id = newId();
@@ -539,8 +546,13 @@ function PlayerAdmin({ tournament, reload }) {
               {FIXED_CLASSES.map(c => <option key={c} value={c}>{c}</option>)}
             </select>
           )}
-          <select value={tee} onChange={e => setTee(e.target.value)} style={{ ...inputStyle, width: 90 }}>
-            {TEES.map(t => <option key={t} value={t}>{t}</option>)}
+          <select value={tee} onChange={e => setTee(e.target.value)} style={{ ...inputStyle, width: 150 }}>
+            <optgroup label="Herren">
+              {TEES.filter(t => t.id === 'Weiß' || t.id === 'Gelb').map(t => <option key={t.id} value={t.id}>{t.id} (CR {t.cr})</option>)}
+            </optgroup>
+            <optgroup label="Damen">
+              {TEES.filter(t => t.id === 'Blau' || t.id === 'Rot').map(t => <option key={t.id} value={t.id}>{t.id} (CR {t.cr})</option>)}
+            </optgroup>
           </select>
           <button onClick={addPlayer} style={smallBtn}>+ Hinzufügen</button>
         </div>
@@ -551,7 +563,7 @@ function PlayerAdmin({ tournament, reload }) {
           <div key={id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 16px', borderBottom: `1px solid ${C.line}` }}>
             <div>
               <span style={{ fontSize: 14, fontWeight: 500 }}>{p.name}</span>
-              <span style={{ fontSize: 12, color: C.muted, marginLeft: 8 }}>Hcp {p.hcp} · Tee {p.tee || TEES[0]} {p.classes && p.classes.length ? '· ' + p.classes.join(', ') : ''}</span>
+              <span style={{ fontSize: 12, color: C.muted, marginLeft: 8 }}>Hcp {p.hcp} · Tee {p.tee || TEE_IDS[0]} {p.classes && p.classes.length ? '· ' + p.classes.join(', ') : ''}</span>
             </div>
             <button onClick={() => removePlayer(id)} style={{ ...smallBtn, color: C.red }}>Entfernen</button>
           </div>
@@ -699,7 +711,7 @@ function PublicLeaderboard({ tournament, err }) {
         played = true;
         const holeIdx = Number(holeIdxStr);
         const par = m.pars[holeIdx];
-        const si = siForTee(m, tee)[holeIdx];
+        const si = m.si[holeIdx];
         if (val === STRICH) {
           strich = true;
           grossPts += 0; netPts += 0;
@@ -859,7 +871,7 @@ function ScoreDetailModal({ tournament, playerId, initialRound, findPlayerRoundS
   const p = tournament.players[playerId];
   const [round, setRound] = useState(initialRound);
   const scores = findPlayerRoundScores(playerId, round);
-  const pars = m.pars, si = siForTee(m, p.tee), holes = m.holes;
+  const pars = m.pars, si = m.si, holes = m.holes;
 
   const scoreStyle = (diff) => {
     if (diff <= -2) return { bg: C.eagle, col: '#3d2e00' };
@@ -908,7 +920,7 @@ function ScoreDetailModal({ tournament, playerId, initialRound, findPlayerRoundS
         <div style={{ padding: '16px 20px 0' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <div>
-              <div style={{ fontSize: 16, fontWeight: 600 }}>{p.name} <span style={{ fontSize: 12, fontWeight: 400, color: C.muted }}>(hcp {p.hcp} · {p.tee || TEES[0]})</span></div>
+              <div style={{ fontSize: 16, fontWeight: 600 }}>{p.name} <span style={{ fontSize: 12, fontWeight: 400, color: C.muted }}>(hcp {p.hcp} · {p.tee || TEE_IDS[0]})</span></div>
             </div>
             <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 18, cursor: 'pointer', color: C.muted }}>×</button>
           </div>
@@ -948,18 +960,12 @@ function SoloEntry({ tournament, flightId, reload }) {
     await reload();
   };
 
-  const completedCount = () => {
-    let count = 0;
-    for (let h = 1; h <= m.holes; h++) {
-      const allEntered = players.every(p => {
-        const ps = (scores[p.id]) || {};
-        return isEntered(ps[h - 1]);
-      });
-      if (allEntered) count = h; else break;
-    }
-    return count;
-  };
-  const completed = completedCount();
+  // Prüft für JEDES Loch einzeln, ob alle Flight-Mitglieder eingetragen haben – nicht nur einen
+  // durchgehenden Block ab Loch 1, damit auch nachträglich/außer der Reihe befüllte Löcher korrekt markiert werden.
+  const isHoleFilled = (h) => players.every(p => {
+    const ps = (scores[p.id]) || {};
+    return isEntered(ps[h - 1]);
+  });
 
   return (
     <div className="wrap" style={{ maxWidth: 380 }}>
@@ -985,7 +991,7 @@ function SoloEntry({ tournament, flightId, reload }) {
           <div style={{ display: 'flex', gap: 5, justifyContent: 'center', marginTop: 10, flexWrap: 'wrap' }}>
             {Array.from({ length: m.holes }).map((_, i) => {
               const n = i + 1;
-              const filled = n <= completed;
+              const filled = isHoleFilled(n);
               const active = n === hole;
               return <span key={n} onClick={() => setHole(n)} style={{ cursor: 'pointer', width: 7, height: 7, borderRadius: '50%', background: active ? C.accent : filled ? C.muted : C.line }} />;
             })}
@@ -1007,12 +1013,12 @@ function SoloEntry({ tournament, flightId, reload }) {
             const raw = scores[p.id] && scores[p.id][hole - 1];
             const struck = raw === STRICH;
             const cur = isNumericScore(raw) ? Number(raw) : m.pars[hole - 1];
-            const playerSi = siForTee(m, p.tee)[hole - 1];
+            const playerSi = m.si[hole - 1];
             return (
               <div key={p.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', background: C.board, borderRadius: 8 }}>
                 <div>
                   <div style={{ fontSize: 13, fontWeight: 500 }}>{p.name}</div>
-                  <div style={{ fontSize: 10, color: C.muted }}>Hcp {p.hcp} · Tee {p.tee || TEES[0]} · Vorg. {playerSi}</div>
+                  <div style={{ fontSize: 10, color: C.muted }}>Hcp {p.hcp} · Tee {p.tee || TEE_IDS[0]} · Vorg. {playerSi}</div>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   {struck ? (
