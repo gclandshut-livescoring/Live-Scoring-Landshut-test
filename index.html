@@ -64,7 +64,7 @@ const C = {
 };
 
 const TOURNAMENT_TYPES = [
-  { id: 'klubmeisterschaft', label: 'Klubmeisterschaft' },
+  { id: 'clubmeisterschaft', label: 'Clubmeisterschaft' },
   { id: 'masters', label: 'Masters' },
   { id: 'sponsorenturnier', label: 'Sponsorenturnier' },
   { id: 'klubturnier', label: 'Reguläres Klubturnier' },
@@ -72,6 +72,7 @@ const TOURNAMENT_TYPES = [
 ];
 const FIXED_CLASSES = ['Herren', 'Damen', 'AK30', 'AK50', 'AK65'];
 const HCP_LETTERS = ['A', 'B', 'C', 'D'];
+const TEES = ['Weiß', 'Gelb', 'Blau', 'Rot']; // Herren: Weiß/Gelb · Damen: Blau/Rot – jeweils eigene Vorgabe (Stroke Index)
 
 const DEFAULT_PARS_18 = [4,4,3,5,4,4,3,5,4, 4,3,4,5,4,4,3,5,4];
 const DEFAULT_SI_18   = [7,3,15,1,11,5,17,9,13, 8,14,2,10,4,6,18,12,16];
@@ -86,6 +87,12 @@ function strokesOnHole(hcp, si, holesCount) {
   const base = Math.floor(hcp / holesCount);
   const extra = si <= (hcp % holesCount) ? 1 : 0;
   return base + extra;
+}
+
+// Holt das Stroke-Index-Array für das jeweilige Abschlag-Tee des Spielers (Fallback: erstes Tee).
+function siForTee(meta, tee) {
+  const t = tee && meta.teeSi && meta.teeSi[tee] ? tee : TEES[0];
+  return (meta.teeSi && meta.teeSi[t]) || meta.si;
 }
 
 const STRICH = 'X'; // Markierung für "Loch aufgegeben"
@@ -273,20 +280,45 @@ function AdminDashboard({ tournament, reload }) {
 function TournamentSetup({ tournament, reload }) {
   const m = (tournament && tournament.meta) || {};
   const [name, setName] = useState(m.name || '');
-  const [type, setType] = useState(m.type || 'klubmeisterschaft');
+  const [type, setType] = useState(m.type || 'clubmeisterschaft');
   const [holes, setHoles] = useState(m.holes || 18);
-  const [classificationMode, setClassificationMode] = useState(m.classificationMode || (type === 'klubmeisterschaft' ? 'fixed' : 'hcp'));
+  const [classificationMode, setClassificationMode] = useState(m.classificationMode || (type === 'clubmeisterschaft' ? 'fixed' : 'hcp'));
   const [hcpClasses, setHcpClasses] = useState(m.hcpClasses || [{ id: 'A', from: 0, to: 8 }, { id: 'B', from: 8.1, to: 16 }]);
   const [rounds, setRounds] = useState(m.rounds || [{ id: 1, label: 'Runde 1' }, { id: 2, label: 'Runde 2' }]);
-  const [scoringMode, setScoringMode] = useState(m.scoringMode || 'strokeplay_net');
+  const [scoringMode, setScoringMode] = useState(m.scoringMode || ((m.type || 'clubmeisterschaft') === 'clubmeisterschaft' || (m.type || '') === 'masters' ? 'strokeplay_net' : 'stableford'));
   const [adminPin, setAdminPin] = useState(m.adminPin || '2026');
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
-    if (type === 'klubmeisterschaft') setClassificationMode('fixed');
+    if (type === 'clubmeisterschaft') setClassificationMode('fixed');
     else setClassificationMode('hcp');
   }, [type]);
+
+  // Sinnvoller Standard je Turnierart, admin kann trotzdem jederzeit umstellen
+  const suggestScoringMode = (t) => (t === 'clubmeisterschaft' || t === 'masters') ? 'strokeplay_net' : 'stableford';
+  const scoringModeTouched = useRef(!!m.scoringMode);
+  useEffect(() => {
+    if (!scoringModeTouched.current) setScoringMode(suggestScoringMode(type));
+  }, [type]);
+
+  const [teeSi, setTeeSi] = useState(m.teeSi || Object.fromEntries(TEES.map(t => [t, holes === 18 ? DEFAULT_SI_18 : DEFAULT_SI_9])));
+  useEffect(() => {
+    setTeeSi(prev => {
+      const targetLen = holes;
+      const needsReset = TEES.some(t => !prev[t] || prev[t].length !== targetLen);
+      if (!needsReset) return prev;
+      const fallback = holes === 18 ? DEFAULT_SI_18 : DEFAULT_SI_9;
+      return Object.fromEntries(TEES.map(t => [t, (prev[t] && prev[t].length === targetLen) ? prev[t] : fallback]));
+    });
+  }, [holes]);
+  const updateTeeSiHole = (tee, holeIdx, val) => {
+    setTeeSi(prev => {
+      const arr = [...(prev[tee] || (holes === 18 ? DEFAULT_SI_18 : DEFAULT_SI_9))];
+      arr[holeIdx] = Number(val) || 1;
+      return { ...prev, [tee]: arr };
+    });
+  };
 
   const setHcpCount = (n) => {
     const next = HCP_LETTERS.slice(0, n).map((letter, i) => hcpClasses[i] || { id: letter, from: '', to: '' });
@@ -316,6 +348,7 @@ function TournamentSetup({ tournament, reload }) {
       rounds, adminPin,
       scoringMode,
       pars: m.pars || pars, si: m.si || si,
+      teeSi,
     };
     await fbPatch('tournament/meta', meta);
     await reload();
@@ -327,7 +360,7 @@ function TournamentSetup({ tournament, reload }) {
   return (
     <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20 }}>
       <Field label="Turniername">
-        <input value={name} onChange={e => setName(e.target.value)} placeholder="z. B. Klubmeisterschaft 2026" style={inputStyle} />
+        <input value={name} onChange={e => setName(e.target.value)} placeholder="z. B. Clubmeisterschaft 2026" style={inputStyle} />
       </Field>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
         <Field label="Turnierart">
@@ -344,7 +377,7 @@ function TournamentSetup({ tournament, reload }) {
       </div>
 
       <Field label="Scoring-Modus">
-        <select value={scoringMode} onChange={e => setScoringMode(e.target.value)} style={inputStyle}>
+        <select value={scoringMode} onChange={e => { scoringModeTouched.current = true; setScoringMode(e.target.value); }} style={inputStyle}>
           <option value="strokeplay_net">Zählspiel Netto (Brutto minus Gesamtvorgabe)</option>
           <option value="stableford">Stableford (Brutto- & Netto-Punkte pro Loch)</option>
         </select>
@@ -362,7 +395,7 @@ function TournamentSetup({ tournament, reload }) {
         </div>
       </Field>
 
-      <Field label={type === 'klubmeisterschaft' ? 'Klassifizierung (automatisch)' : 'Klassifizierung'}>
+      <Field label={type === 'clubmeisterschaft' ? 'Klassifizierung (automatisch)' : 'Klassifizierung'}>
         {classificationMode === 'fixed' ? (
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             {FIXED_CLASSES.map(c => <span key={c} style={badgeStyle}>{c}</span>)}
@@ -387,6 +420,24 @@ function TournamentSetup({ tournament, reload }) {
         )}
       </Field>
 
+      <Field label="Vorgabe (Stroke Index) je Abschlag">
+        <div style={{ fontSize: 12, color: C.muted, marginBottom: 10 }}>Herren: Weiß/Gelb · Damen: Blau/Rot — je Tee eigene Reihenfolge, damit die Netto-Berechnung stimmt.</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {TEES.map(tee => (
+            <div key={tee}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: C.inkDim, marginBottom: 4 }}>{tee}</div>
+              <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                {(teeSi[tee] || []).map((v, i) => (
+                  <input key={i} type="number" value={v} onChange={e => updateTeeSiHole(tee, i, e.target.value)}
+                    title={`Loch ${i + 1}`}
+                    style={{ width: 34, padding: '4px 2px', textAlign: 'center', fontSize: 11, border: `1px solid ${C.line}`, borderRadius: 4 }} />
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </Field>
+
       <Field label="Admin-PIN">
         <input value={adminPin} onChange={e => setAdminPin(e.target.value)} style={{ ...inputStyle, width: 140 }} />
       </Field>
@@ -404,12 +455,13 @@ function PlayerAdmin({ tournament, reload }) {
   const [name, setName] = useState('');
   const [hcp, setHcp] = useState('');
   const [cls, setCls] = useState(meta.classificationMode === 'fixed' ? FIXED_CLASSES[0] : '');
+  const [tee, setTee] = useState(TEES[0]);
   const fileRef = useRef(null);
 
   const addPlayer = async () => {
     if (!name || hcp === '') return;
     const id = newId();
-    await fbPatch('tournament/players/' + id, { name, hcp: Number(hcp), classes: cls ? [cls] : [] });
+    await fbPatch('tournament/players/' + id, { name, hcp: Number(hcp), classes: cls ? [cls] : [], tee });
     setName(''); setHcp('');
     await reload();
   };
@@ -419,7 +471,7 @@ function PlayerAdmin({ tournament, reload }) {
     await reload();
   };
 
-  // CSV-Spalten: name,handicap,klasse,flight  (klasse nur bei fester Klassifizierung nötig, flight optional)
+  // CSV-Spalten: name,handicap,klasse,tee,flight  (klasse nur bei fester Klassifizierung nötig, tee = Weiß/Gelb/Blau/Rot, flight optional)
   // Ist eine Flight-Spalte gefüllt, werden Spieler automatisch zu Flights gruppiert und
   // pro Flight-Namen ein Link + Passwort erzeugt.
   const handleFile = (e) => {
@@ -435,11 +487,13 @@ function PlayerAdmin({ tournament, reload }) {
       lines.forEach(line => {
         const parts = line.split(',').map(s => s && s.trim());
         const pname = parts[0], phcp = parts[1];
-        const pcls = isFixed ? parts[2] : undefined;
-        const pflight = isFixed ? parts[3] : parts[2];
+        let idx = 2;
+        const pcls = isFixed ? parts[idx++] : undefined;
+        const ptee = TEES.includes(parts[idx]) ? parts[idx++] : TEES[0];
+        const pflight = parts[idx];
         if (!pname || phcp === undefined) return;
         const id = newId();
-        playerUpdates[id] = { name: pname, hcp: Number(phcp), classes: pcls ? [pcls] : [] };
+        playerUpdates[id] = { name: pname, hcp: Number(phcp), classes: pcls ? [pcls] : [], tee: ptee };
         if (pflight) {
           if (!flightGroups[pflight]) flightGroups[pflight] = [];
           flightGroups[pflight].push(id);
@@ -467,8 +521,8 @@ function PlayerAdmin({ tournament, reload }) {
       <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
           <span style={{ fontSize: 13, color: C.inkDim }}>
-            CSV hochladen: name,handicap{meta.classificationMode === 'fixed' ? ',klasse' : ''},flight
-            <br /><span style={{ fontSize: 11 }}>Flight-Spalte optional – gleicher Flight-Name gruppiert automatisch, Link + Passwort werden erzeugt.</span>
+            CSV hochladen: name,handicap{meta.classificationMode === 'fixed' ? ',klasse' : ''},tee,flight
+            <br /><span style={{ fontSize: 11 }}>tee = Weiß/Gelb/Blau/Rot (optional, Standard Weiß). Flight-Spalte optional – gleicher Flight-Name gruppiert automatisch, Link + Passwort werden erzeugt.</span>
           </span>
           <button onClick={() => fileRef.current.click()} style={smallBtn}>Datei wählen</button>
           <input ref={fileRef} type="file" accept=".csv,text/csv" onChange={handleFile} style={{ display: 'none' }} />
@@ -485,6 +539,9 @@ function PlayerAdmin({ tournament, reload }) {
               {FIXED_CLASSES.map(c => <option key={c} value={c}>{c}</option>)}
             </select>
           )}
+          <select value={tee} onChange={e => setTee(e.target.value)} style={{ ...inputStyle, width: 90 }}>
+            {TEES.map(t => <option key={t} value={t}>{t}</option>)}
+          </select>
           <button onClick={addPlayer} style={smallBtn}>+ Hinzufügen</button>
         </div>
       </div>
@@ -494,7 +551,7 @@ function PlayerAdmin({ tournament, reload }) {
           <div key={id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 16px', borderBottom: `1px solid ${C.line}` }}>
             <div>
               <span style={{ fontSize: 14, fontWeight: 500 }}>{p.name}</span>
-              <span style={{ fontSize: 12, color: C.muted, marginLeft: 8 }}>Hcp {p.hcp} {p.classes && p.classes.length ? '· ' + p.classes.join(', ') : ''}</span>
+              <span style={{ fontSize: 12, color: C.muted, marginLeft: 8 }}>Hcp {p.hcp} · Tee {p.tee || TEES[0]} {p.classes && p.classes.length ? '· ' + p.classes.join(', ') : ''}</span>
             </div>
             <button onClick={() => removePlayer(id)} style={{ ...smallBtn, color: C.red }}>Entfernen</button>
           </div>
@@ -627,7 +684,7 @@ function PublicLeaderboard({ tournament, err }) {
 
   // Stableford: Brutto- und Netto-Punkte pro Loch aufsummiert, Strich = 0 Punkte für beide.
   // GBE (Zählspielschläge) bleibt "unvollständig", sobald ein Strich vorkommt.
-  const stablefordTotalsAcrossRounds = (playerId, hcp) => {
+  const stablefordTotalsAcrossRounds = (playerId, hcp, tee) => {
     let grossPts = 0, netPts = 0, gbe = 0, played = false, strich = false;
     (m.rounds || []).forEach(r => {
       const s = findPlayerRoundScores(playerId, r.id);
@@ -636,7 +693,7 @@ function PublicLeaderboard({ tournament, err }) {
         played = true;
         const holeIdx = Number(holeIdxStr);
         const par = m.pars[holeIdx];
-        const si = m.si[holeIdx];
+        const si = siForTee(m, tee)[holeIdx];
         if (val === STRICH) {
           strich = true;
           grossPts += 0; netPts += 0;
@@ -655,7 +712,7 @@ function PublicLeaderboard({ tournament, err }) {
   const rows = Object.entries(players).map(([id, p]) => {
     const thruScores = findPlayerRoundScores(id, activeRound);
     if (isStableford) {
-      const { grossPts, netPts, gbe } = stablefordTotalsAcrossRounds(id, p.hcp);
+      const { grossPts, netPts, gbe } = stablefordTotalsAcrossRounds(id, p.hcp, p.tee);
       return { id, ...p, grossPts, netPts, gbe, thru: holesPlayed(thruScores) };
     }
     const { gross, par } = totalsAcrossRounds(id);
@@ -788,7 +845,7 @@ function ScoreDetailModal({ tournament, playerId, initialRound, findPlayerRoundS
   const p = tournament.players[playerId];
   const [round, setRound] = useState(initialRound);
   const scores = findPlayerRoundScores(playerId, round);
-  const pars = m.pars, si = m.si, holes = m.holes;
+  const pars = m.pars, si = siForTee(m, p.tee), holes = m.holes;
 
   const scoreStyle = (diff) => {
     if (diff <= -2) return { bg: C.eagle, col: '#3d2e00' };
@@ -837,7 +894,7 @@ function ScoreDetailModal({ tournament, playerId, initialRound, findPlayerRoundS
         <div style={{ padding: '16px 20px 0' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <div>
-              <div style={{ fontSize: 16, fontWeight: 600 }}>{p.name} <span style={{ fontSize: 12, fontWeight: 400, color: C.muted }}>(hcp {p.hcp})</span></div>
+              <div style={{ fontSize: 16, fontWeight: 600 }}>{p.name} <span style={{ fontSize: 12, fontWeight: 400, color: C.muted }}>(hcp {p.hcp} · {p.tee || TEES[0]})</span></div>
             </div>
             <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 18, cursor: 'pointer', color: C.muted }}>×</button>
           </div>
@@ -920,7 +977,7 @@ function SoloEntry({ tournament, flightId, reload }) {
           <div style={{ textAlign: 'center' }}>
             <div style={{ fontSize: 11, color: C.muted }}>Loch</div>
             <div style={{ fontSize: 32, fontWeight: 600 }}>{hole}</div>
-            <div style={{ fontSize: 11, color: C.muted }}>Par {m.pars[hole - 1]} · Vorgabe {m.si[hole - 1]}</div>
+            <div style={{ fontSize: 11, color: C.muted }}>Par {m.pars[hole - 1]}</div>
           </div>
           <button onClick={() => setHole(h => Math.min(m.holes, h + 1))} style={circleBtn}>›</button>
         </div>
@@ -930,11 +987,12 @@ function SoloEntry({ tournament, flightId, reload }) {
             const raw = scores[p.id] && scores[p.id][hole - 1];
             const struck = raw === STRICH;
             const cur = isNumericScore(raw) ? Number(raw) : m.pars[hole - 1];
+            const playerSi = siForTee(m, p.tee)[hole - 1];
             return (
               <div key={p.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', background: C.board, borderRadius: 8 }}>
                 <div>
                   <div style={{ fontSize: 13, fontWeight: 500 }}>{p.name}</div>
-                  <div style={{ fontSize: 10, color: C.muted }}>Hcp {p.hcp}</div>
+                  <div style={{ fontSize: 10, color: C.muted }}>Hcp {p.hcp} · Tee {p.tee || TEES[0]} · Vorg. {playerSi}</div>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   {struck ? (
