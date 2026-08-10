@@ -88,12 +88,26 @@ function strokesOnHole(hcp, si, holesCount) {
   return base + extra;
 }
 
+const STRICH = 'X'; // Markierung für "Loch aufgegeben"
+
+function isEntered(v) { return v !== null && v !== undefined && v !== ''; }
+function isNumericScore(v) { return isEntered(v) && v !== STRICH; }
+
 function grossTotal(scores) {
-  const vals = Object.values(scores || {}).filter(v => v !== null && v !== undefined && v !== '');
+  const vals = Object.values(scores || {}).filter(isNumericScore);
   return vals.reduce((a, b) => a + Number(b), 0);
 }
 function holesPlayed(scores) {
-  return Object.values(scores || {}).filter(v => v !== null && v !== undefined && v !== '').length;
+  return Object.values(scores || {}).filter(isEntered).length;
+}
+function hasStrich(scores) {
+  return Object.values(scores || {}).some(v => v === STRICH);
+}
+
+// Klassische Stableford-Skala: Par = 2 Punkte, je Schlag besser/schlechter +/-1, min. 0.
+function stablefordPoints(diff) {
+  if (diff === null || diff === undefined) return 0; // Strich = 0 Punkte
+  return Math.max(0, 2 - diff);
 }
 
 function playerHcpClass(hcp, hcpClasses) {
@@ -264,6 +278,7 @@ function TournamentSetup({ tournament, reload }) {
   const [classificationMode, setClassificationMode] = useState(m.classificationMode || (type === 'klubmeisterschaft' ? 'fixed' : 'hcp'));
   const [hcpClasses, setHcpClasses] = useState(m.hcpClasses || [{ id: 'A', from: 0, to: 8 }, { id: 'B', from: 8.1, to: 16 }]);
   const [rounds, setRounds] = useState(m.rounds || [{ id: 1, label: 'Runde 1' }, { id: 2, label: 'Runde 2' }]);
+  const [scoringMode, setScoringMode] = useState(m.scoringMode || 'strokeplay_net');
   const [adminPin, setAdminPin] = useState(m.adminPin || '2026');
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -299,7 +314,7 @@ function TournamentSetup({ tournament, reload }) {
       fixedClasses: FIXED_CLASSES,
       hcpClasses: classificationMode === 'hcp' ? hcpClasses : [],
       rounds, adminPin,
-      scoringMode: 'strokeplay_net',
+      scoringMode,
       pars: m.pars || pars, si: m.si || si,
     };
     await fbPatch('tournament/meta', meta);
@@ -327,6 +342,13 @@ function TournamentSetup({ tournament, reload }) {
           </select>
         </Field>
       </div>
+
+      <Field label="Scoring-Modus">
+        <select value={scoringMode} onChange={e => setScoringMode(e.target.value)} style={inputStyle}>
+          <option value="strokeplay_net">Zählspiel Netto (Brutto minus Gesamtvorgabe)</option>
+          <option value="stableford">Stableford (Brutto- & Netto-Punkte pro Loch)</option>
+        </select>
+      </Field>
 
       <Field label="Runden">
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -397,6 +419,9 @@ function PlayerAdmin({ tournament, reload }) {
     await reload();
   };
 
+  // CSV-Spalten: name,handicap,klasse,flight  (klasse nur bei fester Klassifizierung nötig, flight optional)
+  // Ist eine Flight-Spalte gefüllt, werden Spieler automatisch zu Flights gruppiert und
+  // pro Flight-Namen ein Link + Passwort erzeugt.
   const handleFile = (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -404,14 +429,33 @@ function PlayerAdmin({ tournament, reload }) {
     reader.onload = async (ev) => {
       const text = ev.target.result;
       const lines = text.split(/\r?\n/).filter(l => l.trim());
-      const updates = {};
+      const playerUpdates = {};
+      const flightGroups = {}; // flightName -> [playerId, ...]
+      const isFixed = meta.classificationMode === 'fixed';
       lines.forEach(line => {
-        const [pname, phcp, pcls] = line.split(',').map(s => s && s.trim());
+        const parts = line.split(',').map(s => s && s.trim());
+        const pname = parts[0], phcp = parts[1];
+        const pcls = isFixed ? parts[2] : undefined;
+        const pflight = isFixed ? parts[3] : parts[2];
         if (!pname || phcp === undefined) return;
         const id = newId();
-        updates[id] = { name: pname, hcp: Number(phcp), classes: pcls ? [pcls] : [] };
+        playerUpdates[id] = { name: pname, hcp: Number(phcp), classes: pcls ? [pcls] : [] };
+        if (pflight) {
+          if (!flightGroups[pflight]) flightGroups[pflight] = [];
+          flightGroups[pflight].push(id);
+        }
       });
-      await fbPatch('tournament/players', updates);
+      await fbPatch('tournament/players', playerUpdates);
+
+      const flightUpdates = {};
+      Object.entries(flightGroups).forEach(([flightName, playerIds]) => {
+        const fid = newId();
+        flightUpdates[fid] = { name: flightName, playerIds, token: genToken(), password: genPassword() };
+      });
+      if (Object.keys(flightUpdates).length > 0) {
+        await fbPatch('tournament/flights', flightUpdates);
+      }
+
       await reload();
       fileRef.current.value = '';
     };
@@ -422,7 +466,10 @@ function PlayerAdmin({ tournament, reload }) {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-          <span style={{ fontSize: 13, color: C.inkDim }}>Spielerliste hochladen (CSV: name,handicap{meta.classificationMode === 'fixed' ? ',klasse' : ''})</span>
+          <span style={{ fontSize: 13, color: C.inkDim }}>
+            CSV hochladen: name,handicap{meta.classificationMode === 'fixed' ? ',klasse' : ''},flight
+            <br /><span style={{ fontSize: 11 }}>Flight-Spalte optional – gleicher Flight-Name gruppiert automatisch, Link + Passwort werden erzeugt.</span>
+          </span>
           <button onClick={() => fileRef.current.click()} style={smallBtn}>Datei wählen</button>
           <input ref={fileRef} type="file" accept=".csv,text/csv" onChange={handleFile} style={{ display: 'none' }} />
         </div>
@@ -560,32 +607,92 @@ function PublicLeaderboard({ tournament, err }) {
     return {};
   };
 
-  const totalGrossAcrossRounds = (playerId) => {
-    let sum = 0, any = false;
+  // Summiert Schläge UND das Par der tatsächlich gespielten Löcher über alle Runden,
+  // damit wir "brutto/netto relativ zum Par" korrekt anzeigen können (wie bei Turnier-Leaderboards üblich).
+  const isStableford = m.scoringMode === 'stableford';
+
+  const totalsAcrossRounds = (playerId) => {
+    let gross = 0, par = 0, any = false;
     (m.rounds || []).forEach(r => {
       const s = findPlayerRoundScores(playerId, r.id);
-      if (holesPlayed(s) > 0) { sum += grossTotal(s); any = true; }
+      Object.entries(s).forEach(([holeIdx, val]) => {
+        if (!isNumericScore(val)) return;
+        gross += Number(val);
+        par += m.pars[Number(holeIdx)] || 0;
+        any = true;
+      });
     });
-    return any ? sum : null;
+    return any ? { gross, par } : { gross: null, par: null };
+  };
+
+  // Stableford: Brutto- und Netto-Punkte pro Loch aufsummiert, Strich = 0 Punkte für beide.
+  // GBE (Zählspielschläge) bleibt "unvollständig", sobald ein Strich vorkommt.
+  const stablefordTotalsAcrossRounds = (playerId, hcp) => {
+    let grossPts = 0, netPts = 0, gbe = 0, played = false, strich = false;
+    (m.rounds || []).forEach(r => {
+      const s = findPlayerRoundScores(playerId, r.id);
+      Object.entries(s).forEach(([holeIdxStr, val]) => {
+        if (!isEntered(val)) return;
+        played = true;
+        const holeIdx = Number(holeIdxStr);
+        const par = m.pars[holeIdx];
+        const si = m.si[holeIdx];
+        if (val === STRICH) {
+          strich = true;
+          grossPts += 0; netPts += 0;
+          return;
+        }
+        const score = Number(val);
+        gbe += score;
+        grossPts += stablefordPoints(score - par);
+        const net = score - strokesOnHole(hcp, si, m.holes);
+        netPts += stablefordPoints(net - par);
+      });
+    });
+    return played ? { grossPts, netPts, gbe: strich ? null : gbe } : { grossPts: null, netPts: null, gbe: null };
   };
 
   const rows = Object.entries(players).map(([id, p]) => {
-    const gross = totalGrossAcrossRounds(id);
-    const net = gross === null ? null : gross - p.hcp;
     const thruScores = findPlayerRoundScores(id, activeRound);
-    return { id, ...p, gross, net, thru: holesPlayed(thruScores) };
+    if (isStableford) {
+      const { grossPts, netPts, gbe } = stablefordTotalsAcrossRounds(id, p.hcp);
+      return { id, ...p, grossPts, netPts, gbe, thru: holesPlayed(thruScores) };
+    }
+    const { gross, par } = totalsAcrossRounds(id);
+    const grossToPar = gross === null ? null : gross - par;
+    const net = gross === null ? null : gross - p.hcp;
+    const netToPar = net === null ? null : net - par;
+    return { id, ...p, gross, grossToPar, net, netToPar, thru: holesPlayed(thruScores) };
   });
+
+  const fmtToPar = (v) => v === null ? '–' : v === 0 ? 'E' : v > 0 ? '+' + v : String(v);
+
+  // Übergreifender Brutto-Sieger (für die Ausschluss-Regel: wer Brutto gewinnt, kann nicht auch Netto-Sieger sein)
+  const bruttoLeaderId = (() => {
+    if (!isStableford) return null;
+    const candidates = rows.filter(r => r.grossPts !== null).sort((a, b) => b.grossPts - a.grossPts);
+    return candidates.length ? candidates[0].id : null;
+  })();
 
   let visibleRows;
   if (m.classificationMode === 'fixed') {
     visibleRows = rows.filter(r => (r.classes || []).includes(activeClass));
-    visibleRows.sort((a, b) => (a.net ?? 999) - (b.net ?? 999));
+    visibleRows.sort((a, b) => isStableford ? (b.netPts ?? -1) - (a.netPts ?? -1) : (a.netToPar ?? 999) - (b.netToPar ?? 999));
   } else if (activeClass === 'Brutto') {
-    visibleRows = rows.filter(r => r.gross !== null);
-    visibleRows.sort((a, b) => (a.gross ?? 999) - (b.gross ?? 999));
+    visibleRows = rows.filter(r => isStableford ? r.grossPts !== null : r.gross !== null);
+    visibleRows.sort((a, b) => isStableford ? (b.grossPts ?? -1) - (a.grossPts ?? -1) : (a.grossToPar ?? 999) - (b.grossToPar ?? 999));
   } else {
     visibleRows = rows.filter(r => playerHcpClass(r.hcp, m.hcpClasses) === activeClass);
-    visibleRows.sort((a, b) => (a.net ?? 999) - (b.net ?? 999));
+    visibleRows.sort((a, b) => isStableford ? (b.netPts ?? -1) - (a.netPts ?? -1) : (a.netToPar ?? 999) - (b.netToPar ?? 999));
+  }
+
+  // Ausschluss-Regel anwenden: wenn der Tabellenführer dieser Netto-Ansicht der Brutto-Gesamtsieger ist,
+  // wandert die Sieger-Markierung auf den nächstplatzierten Spieler.
+  let leaderIndex = visibleRows.length > 0 ? 0 : -1;
+  let excludedNote = null;
+  if (isStableford && activeClass !== 'Brutto' && leaderIndex === 0 && visibleRows[0] && visibleRows[0].id === bruttoLeaderId && visibleRows.length > 1) {
+    excludedNote = visibleRows[0].name;
+    leaderIndex = 1;
   }
 
   return (
@@ -619,20 +726,44 @@ function PublicLeaderboard({ tournament, err }) {
           ))}
         </div>
 
+        {excludedNote && (
+          <div style={{ padding: '8px 20px', fontSize: 11, color: C.muted, background: C.board, borderBottom: `1px solid ${C.line}` }}>
+            {excludedNote} führt in Netto, hat aber bereits Brutto gewonnen – Netto-Sieg geht an Platz 2.
+          </div>
+        )}
+
         <div>
           {visibleRows.map((r, i) => (
             <div key={r.id} onClick={() => setDetailPlayer(r.id)}
-              style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 20px', background: i === 0 && r.gross !== null ? C.greenTint : 'transparent', borderBottom: `1px solid ${C.line}`, cursor: 'pointer' }}>
+              style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 20px', background: i === leaderIndex ? C.greenTint : 'transparent', borderBottom: `1px solid ${C.line}`, cursor: 'pointer' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
                 <span style={{ fontSize: 13, color: C.muted, width: 18, fontWeight: 600 }}>{i + 1}</span>
                 <div>
-                  <div style={{ fontSize: 15, fontWeight: 500 }}>{r.name}</div>
+                  <div style={{ fontSize: 15, fontWeight: 500 }}>{r.name}{isStableford && r.id === bruttoLeaderId && activeClass !== 'Brutto' ? ' 🏆' : ''}</div>
                   <div style={{ fontSize: 11, color: C.muted }}>Hcp {r.hcp} · {r.thru}/{m.holes} Loch</div>
                 </div>
               </div>
-              <span style={{ fontSize: 16, fontWeight: 600, color: i === 0 && r.gross !== null ? C.green : C.ink }}>
-                {activeClass === 'Brutto' ? (r.gross ?? '–') : (r.net === null ? '–' : (r.net > 0 ? '+' + r.net : r.net === 0 ? 'E' : r.net))}
-              </span>
+              <div style={{ textAlign: 'right' }}>
+                {isStableford ? (
+                  <>
+                    <div style={{ fontSize: 16, fontWeight: 600, color: i === leaderIndex ? C.green : C.ink }}>
+                      {(activeClass === 'Brutto' ? r.grossPts : r.netPts) ?? '–'} Pkt.
+                    </div>
+                    <div style={{ fontSize: 10, color: C.muted }}>
+                      GBE {r.gbe === null ? '–' : r.gbe}
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div style={{ fontSize: 16, fontWeight: 600, color: i === leaderIndex ? C.green : C.ink }}>
+                      {activeClass === 'Brutto' ? fmtToPar(r.grossToPar) : fmtToPar(r.netToPar)}
+                    </div>
+                    <div style={{ fontSize: 10, color: C.muted }}>
+                      {activeClass === 'Brutto' ? (r.gross ?? '–') : (r.net ?? '–')} schläge
+                    </div>
+                  </>
+                )}
+              </div>
             </div>
           ))}
           {visibleRows.length === 0 && <div style={{ padding: 24, textAlign: 'center', color: C.muted, fontSize: 13 }}>Noch keine Spieler in dieser Klasse.</div>}
@@ -671,14 +802,15 @@ function ScoreDetailModal({ tournament, playerId, initialRound, findPlayerRoundS
     const cells = [];
     for (let i = startIdx; i < startIdx + count; i++) {
       const s = scores[i];
-      const hasScore = s !== undefined && s !== null && s !== '';
+      const struck = s === STRICH;
+      const hasScore = isNumericScore(s);
       const diff = hasScore ? Number(s) - pars[i] : null;
       const st = hasScore ? scoreStyle(diff) : { bg: 'transparent', col: C.muted };
       cells.push(
         <td key={i} style={{ padding: '4px 2px', textAlign: 'center' }}>
           <span style={{ position: 'relative', display: 'inline-flex', width: 26, height: 26, alignItems: 'center', justifyContent: 'center', borderRadius: '50%', background: st.bg, color: st.col, fontWeight: 500, fontSize: 13 }}>
             <span style={{ position: 'absolute', top: -7, right: -8, fontSize: 8, color: C.muted }}>{si[i]}</span>
-            {hasScore ? s : '–'}
+            {hasScore ? s : struck ? '✕' : '–'}
           </span>
         </td>
       );
@@ -750,7 +882,7 @@ function SoloEntry({ tournament, flightId, reload }) {
     for (let h = 1; h <= m.holes; h++) {
       const allEntered = players.every(p => {
         const ps = (scores[p.id]) || {};
-        return ps[h - 1] !== undefined && ps[h - 1] !== null && ps[h - 1] !== '';
+        return isEntered(ps[h - 1]);
       });
       if (allEntered) count = h; else break;
     }
@@ -795,17 +927,29 @@ function SoloEntry({ tournament, flightId, reload }) {
 
         <div style={{ padding: '4px 18px 18px', display: 'flex', flexDirection: 'column', gap: 10 }}>
           {players.map(p => {
-            const cur = (scores[p.id] && scores[p.id][hole - 1] !== undefined && scores[p.id][hole - 1] !== null && scores[p.id][hole - 1] !== '') ? Number(scores[p.id][hole - 1]) : m.pars[hole - 1];
+            const raw = scores[p.id] && scores[p.id][hole - 1];
+            const struck = raw === STRICH;
+            const cur = isNumericScore(raw) ? Number(raw) : m.pars[hole - 1];
             return (
               <div key={p.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', background: C.board, borderRadius: 8 }}>
                 <div>
                   <div style={{ fontSize: 13, fontWeight: 500 }}>{p.name}</div>
                   <div style={{ fontSize: 10, color: C.muted }}>Hcp {p.hcp}</div>
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <button onClick={() => setScore(p.id, Math.max(1, cur - 1))} style={smallCircleBtn}>−</button>
-                  <span style={{ fontSize: 18, fontWeight: 600, minWidth: 20, textAlign: 'center' }}>{cur}</span>
-                  <button onClick={() => setScore(p.id, cur + 1)} style={smallCircleBtn}>+</button>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  {struck ? (
+                    <>
+                      <span style={{ fontSize: 13, color: C.muted, minWidth: 40, textAlign: 'center' }}>Strich</span>
+                      <button onClick={() => setScore(p.id, m.pars[hole - 1])} style={{ ...smallBtn, padding: '5px 10px' }}>Zurück</button>
+                    </>
+                  ) : (
+                    <>
+                      <button onClick={() => setScore(p.id, Math.max(1, cur - 1))} style={smallCircleBtn}>−</button>
+                      <span style={{ fontSize: 18, fontWeight: 600, minWidth: 20, textAlign: 'center' }}>{cur}</span>
+                      <button onClick={() => setScore(p.id, cur + 1)} style={smallCircleBtn}>+</button>
+                      <button onClick={() => setScore(p.id, STRICH)} title="Loch aufgeben" style={{ ...smallBtn, padding: '5px 8px', fontSize: 11, color: C.muted, marginLeft: 4 }}>Strich</button>
+                    </>
+                  )}
                 </div>
               </div>
             );
