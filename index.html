@@ -302,6 +302,9 @@ function TournamentSetup({ tournament, reload }) {
   const [rounds, setRounds] = useState(m.rounds || [{ id: 1, label: 'Runde 1' }, { id: 2, label: 'Runde 2' }]);
   const [scoringMode, setScoringMode] = useState(m.scoringMode || ((m.type || 'clubmeisterschaft') === 'clubmeisterschaft' || (m.type || '') === 'masters' ? 'strokeplay_net' : 'stableford'));
   const [adminPin, setAdminPin] = useState(m.adminPin || '2026');
+  const [herrenTee, setHerrenTee] = useState(m.herrenTee || 'Weiß');
+  const [damenTee, setDamenTee] = useState(m.damenTee || 'Blau');
+  const [prizeCount, setPrizeCount] = useState(m.prizeCount || 3);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
@@ -353,6 +356,8 @@ function TournamentSetup({ tournament, reload }) {
       rounds, adminPin,
       scoringMode,
       pars, si,
+      herrenTee, damenTee,
+      prizeCount,
     };
     await fbPatch('tournament/meta', meta);
     await reload();
@@ -424,6 +429,21 @@ function TournamentSetup({ tournament, reload }) {
         )}
       </Field>
 
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <Field label="Herren spielen von">
+          <select value={herrenTee} onChange={e => setHerrenTee(e.target.value)} style={inputStyle}>
+            <option value="Weiß">Weiß (CR 72.8)</option>
+            <option value="Gelb">Gelb (CR 71.1)</option>
+          </select>
+        </Field>
+        <Field label="Damen spielen von">
+          <select value={damenTee} onChange={e => setDamenTee(e.target.value)} style={inputStyle}>
+            <option value="Blau">Blau (CR 74.5)</option>
+            <option value="Rot">Rot (CR 72.4)</option>
+          </select>
+        </Field>
+      </div>
+
       <Field label="Platzkarte: Par & Vorgabe (Stroke Index)">
         <div style={{ fontSize: 12, color: C.muted, marginBottom: 10 }}>Gilt für alle vier Tees (Weiß/Gelb/Blau/Rot) gleichermaßen. Die eigentliche Course-Handicap-Zahl kommt pro Spieler aus der Startliste.</div>
         <div style={{ fontSize: 11, fontWeight: 600, color: C.inkDim, marginBottom: 4 }}>Par</div>
@@ -449,6 +469,15 @@ function TournamentSetup({ tournament, reload }) {
         <input value={adminPin} onChange={e => setAdminPin(e.target.value)} style={{ ...inputStyle, width: 140 }} />
       </Field>
 
+      <Field label="Preisränge pro Wertungsklasse">
+        <select value={prizeCount} onChange={e => setPrizeCount(Number(e.target.value))} style={{ ...inputStyle, width: 140 }}>
+          <option value={1}>1 Preis</option>
+          <option value={2}>2 Preise</option>
+          <option value={3}>3 Preise</option>
+        </select>
+        <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>Bestimmt, wie viele Plätze in der Live-Rangliste farblich hervorgehoben werden (1. Platz am stärksten).</div>
+      </Field>
+
       <button onClick={save} disabled={saving} style={{ padding: '11px 20px', background: C.ink, color: '#fff', border: 'none', borderRadius: 6, fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>
         {saving ? 'Speichert…' : saved ? 'Gespeichert ✓' : 'Turnier speichern'}
       </button>
@@ -462,13 +491,16 @@ function PlayerAdmin({ tournament, reload }) {
   const [name, setName] = useState('');
   const [hcp, setHcp] = useState('');
   const [cls, setCls] = useState(meta.classificationMode === 'fixed' ? FIXED_CLASSES[0] : '');
-  const [tee, setTee] = useState(TEE_IDS[0]);
+  const [geschlecht, setGeschlecht] = useState('m');
   const fileRef = useRef(null);
+
+  // Tee wird automatisch aus Geschlecht + Turniereinstellung (Herren/Damen spielen von...) abgeleitet.
+  const teeForGeschlecht = (g) => g === 'w' ? (meta.damenTee || 'Blau') : (meta.herrenTee || 'Weiß');
 
   const addPlayer = async () => {
     if (!name || hcp === '') return;
     const id = newId();
-    await fbPatch('tournament/players/' + id, { name, hcp: Number(hcp), classes: cls ? [cls] : [], tee });
+    await fbPatch('tournament/players/' + id, { name, hcp: Number(hcp), classes: cls ? [cls] : [], geschlecht, tee: teeForGeschlecht(geschlecht) });
     setName(''); setHcp('');
     await reload();
   };
@@ -478,7 +510,7 @@ function PlayerAdmin({ tournament, reload }) {
     await reload();
   };
 
-  // CSV-Spalten: name,handicap,klasse,tee,flight  (klasse nur bei fester Klassifizierung nötig, tee = Weiß/Gelb/Blau/Rot, flight optional)
+  // CSV-Spalten: name,handicap,klasse,geschlecht,flight  (klasse nur bei fester Klassifizierung nötig, geschlecht = m/w, flight optional)
   // Ist eine Flight-Spalte gefüllt, werden Spieler automatisch zu Flights gruppiert und
   // pro Flight-Namen ein Link + Passwort erzeugt.
   const handleFile = (e) => {
@@ -496,11 +528,11 @@ function PlayerAdmin({ tournament, reload }) {
         const pname = parts[0], phcp = parts[1];
         let idx = 2;
         const pcls = isFixed ? parts[idx++] : undefined;
-        const ptee = TEE_IDS.includes(parts[idx]) ? parts[idx++] : TEE_IDS[0];
+        const pg = (parts[idx] === 'w' || parts[idx] === 'm') ? parts[idx++] : 'm';
         const pflight = parts[idx];
         if (!pname || phcp === undefined) return;
         const id = newId();
-        playerUpdates[id] = { name: pname, hcp: Number(phcp), classes: pcls ? [pcls] : [], tee: ptee };
+        playerUpdates[id] = { name: pname, hcp: Number(phcp), classes: pcls ? [pcls] : [], geschlecht: pg, tee: teeForGeschlecht(pg) };
         if (pflight) {
           if (!flightGroups[pflight]) flightGroups[pflight] = [];
           flightGroups[pflight].push(id);
@@ -546,13 +578,9 @@ function PlayerAdmin({ tournament, reload }) {
               {FIXED_CLASSES.map(c => <option key={c} value={c}>{c}</option>)}
             </select>
           )}
-          <select value={tee} onChange={e => setTee(e.target.value)} style={{ ...inputStyle, width: 150 }}>
-            <optgroup label="Herren">
-              {TEES.filter(t => t.id === 'Weiß' || t.id === 'Gelb').map(t => <option key={t.id} value={t.id}>{t.id} (CR {t.cr})</option>)}
-            </optgroup>
-            <optgroup label="Damen">
-              {TEES.filter(t => t.id === 'Blau' || t.id === 'Rot').map(t => <option key={t.id} value={t.id}>{t.id} (CR {t.cr})</option>)}
-            </optgroup>
+          <select value={geschlecht} onChange={e => setGeschlecht(e.target.value)} style={{ ...inputStyle, width: 110 }}>
+            <option value="m">Herr</option>
+            <option value="w">Dame</option>
           </select>
           <button onClick={addPlayer} style={smallBtn}>+ Hinzufügen</button>
         </div>
@@ -563,7 +591,7 @@ function PlayerAdmin({ tournament, reload }) {
           <div key={id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 16px', borderBottom: `1px solid ${C.line}` }}>
             <div>
               <span style={{ fontSize: 14, fontWeight: 500 }}>{p.name}</span>
-              <span style={{ fontSize: 12, color: C.muted, marginLeft: 8 }}>Hcp {p.hcp} · Tee {p.tee || TEE_IDS[0]} {p.classes && p.classes.length ? '· ' + p.classes.join(', ') : ''}</span>
+              <span style={{ fontSize: 12, color: C.muted, marginLeft: 8 }}>Hcp {p.hcp} · {p.geschlecht === 'w' ? 'Dame' : 'Herr'} · Tee {p.tee || teeForGeschlecht(p.geschlecht)} {p.classes && p.classes.length ? '· ' + p.classes.join(', ') : ''}</span>
             </div>
             <button onClick={() => removePlayer(id)} style={{ ...smallBtn, color: C.red }}>Entfernen</button>
           </div>
@@ -735,7 +763,7 @@ function PublicLeaderboard({ tournament, err }) {
     }
     const { gross, par } = totalsAcrossRounds(id);
     const grossToPar = gross === null ? null : gross - par;
-    const net = gross === null ? null : gross - p.hcp;
+    const net = gross === null ? null : Math.round(gross - p.hcp);
     const netToPar = net === null ? null : net - par;
     return { id, ...p, gross, grossToPar, net, netToPar, thru: holesPlayed(thruScores) };
   });
@@ -769,6 +797,20 @@ function PublicLeaderboard({ tournament, err }) {
     excludedNote = visibleRows[0].name;
     leaderIndex = 1;
   }
+
+  // Preisränge: 1.–3. Platz farblich abgestuft hervorgehoben, Anzahl je nach Admin-Einstellung.
+  // Ein durch die Ausschluss-Regel übersprungener Platz zählt nicht als Preisrang mit.
+  const prizeCount = m.prizeCount || 3;
+  const PRIZE_TIERS = [
+    { bg: 'rgba(29,122,76,0.24)', color: C.green, weight: 700, size: 17 },
+    { bg: 'rgba(29,122,76,0.14)', color: C.green, weight: 600, size: 16 },
+    { bg: 'rgba(29,122,76,0.07)', color: C.ink, weight: 600, size: 15 },
+  ];
+  const prizeTierForRow = (i) => {
+    if (excludedNote && i === 0) return null; // ausgeschlossener Spieler bekommt keinen Preisrang-Look
+    const rank = excludedNote ? i - 1 : i;
+    return rank < prizeCount ? PRIZE_TIERS[rank] : null;
+  };
 
   return (
     <div className="wrap" style={{ maxWidth: 620 }}>
@@ -816,20 +858,22 @@ function PublicLeaderboard({ tournament, err }) {
         )}
 
         <div>
-          {visibleRows.map((r, i) => (
+          {visibleRows.map((r, i) => {
+            const tier = prizeTierForRow(i);
+            return (
             <div key={r.id} onClick={() => setDetailPlayer(r.id)}
-              style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 20px', background: i === leaderIndex ? C.greenTint : 'transparent', borderBottom: `1px solid ${C.line}`, cursor: 'pointer' }}>
+              style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 20px', background: tier ? tier.bg : 'transparent', borderBottom: `1px solid ${C.line}`, cursor: 'pointer' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
                 <span style={{ fontSize: 13, color: C.muted, width: 18, fontWeight: 600 }}>{i + 1}</span>
                 <div>
-                  <div style={{ fontSize: 15, fontWeight: 500 }}>{r.name}{isStableford && r.id === bruttoLeaderId && activeClass !== 'Brutto' ? ' 🏆' : ''}</div>
+                  <div style={{ fontSize: tier ? tier.size : 15, fontWeight: tier ? tier.weight : 500, color: tier ? tier.color : C.ink }}>{r.name}{isStableford && r.id === bruttoLeaderId && activeClass !== 'Brutto' ? ' 🏆' : ''}</div>
                   <div style={{ fontSize: 11, color: C.muted }}>Hcp {r.hcp} · {r.thru}/{m.holes} Loch</div>
                 </div>
               </div>
               <div style={{ textAlign: 'right' }}>
                 {isStableford ? (
                   <>
-                    <div style={{ fontSize: 16, fontWeight: 600, color: i === leaderIndex ? C.green : C.ink }}>
+                    <div style={{ fontSize: tier ? tier.size : 16, fontWeight: tier ? tier.weight : 600, color: tier ? tier.color : C.ink }}>
                       {(activeClass === 'Brutto' ? r.grossPts : r.netPts) ?? '–'} Pkt.
                     </div>
                     <div style={{ fontSize: 10, color: C.muted }}>
@@ -838,7 +882,7 @@ function PublicLeaderboard({ tournament, err }) {
                   </>
                 ) : (
                   <>
-                    <div style={{ fontSize: 16, fontWeight: 600, color: i === leaderIndex ? C.green : C.ink }}>
+                    <div style={{ fontSize: tier ? tier.size : 16, fontWeight: tier ? tier.weight : 600, color: tier ? tier.color : C.ink }}>
                       {activeClass === 'Brutto' ? fmtToPar(r.grossToPar) : fmtToPar(r.netToPar)}
                     </div>
                     <div style={{ fontSize: 10, color: C.muted }}>
@@ -848,7 +892,8 @@ function PublicLeaderboard({ tournament, err }) {
                 )}
               </div>
             </div>
-          ))}
+            );
+          })}
           {visibleRows.length === 0 && <div style={{ padding: 24, textAlign: 'center', color: C.muted, fontSize: 13 }}>Noch keine Spieler in dieser Klasse.</div>}
         </div>
       </div>
