@@ -70,7 +70,7 @@ const TOURNAMENT_TYPES = [
   { id: 'klubturnier', label: 'Reguläres Klubturnier' },
   { id: 'ryder_cup', label: 'Ryder Cup (nur Label)' },
 ];
-const FIXED_CLASSES = ['Herren', 'Damen', 'AK30', 'AK50', 'AK65'];
+const FIXED_CLASSES = ['Herren', 'Damen', 'AK30', 'AK50', 'AK65', 'Jugend'];
 const HCP_LETTERS = ['A', 'B', 'C', 'D'];
 // Alle vier Tees teilen sich dieselbe Par-/Index-Karte, nur der CR-Wert unterscheidet sich
 // (die daraus resultierende Vorgabe kommt bereits fertig aus der Startliste pro Spieler).
@@ -86,6 +86,10 @@ const DEFAULT_PARS_18 = [4,4,5,5,4,3,5,3,4, 4,4,5,4,3,5,3,4,4]; // GC Landshut
 const DEFAULT_SI_18   = [9,5,11,7,15,3,13,1,17, 8,14,18,12,10,16,6,4,2]; // GC Landshut
 const DEFAULT_PARS_9 = DEFAULT_PARS_18.slice(0,9);
 const DEFAULT_SI_9 = [5,3,7,4,9,1,8,6,2]; // Behelfswerte für 9-Loch, bis echte 9-Loch-Karte vorliegt
+// Platzkarte ist fest und identisch für alle Turniere (ändert sich nicht) – keine Eingabe nötig.
+function courseFor(holes) {
+  return holes === 18 ? { pars: DEFAULT_PARS_18, si: DEFAULT_SI_18 } : { pars: DEFAULT_PARS_9, si: DEFAULT_SI_9 };
+}
 
 function newId() { return Math.random().toString(36).slice(2, 9); }
 function genToken() { return Math.random().toString(36).slice(2, 10); }
@@ -323,16 +327,6 @@ function TournamentSetup({ tournament, reload }) {
     if (!scoringModeTouched.current) setScoringMode(suggestScoringMode(type));
   }, [type]);
 
-  // Eine Platzkarte für alle vier Tees (Par + Index identisch, nur CR/Vorgabe unterscheidet sich je Tee).
-  const [pars, setPars] = useState(m.pars || (holes === 18 ? DEFAULT_PARS_18 : DEFAULT_PARS_9));
-  const [si, setSi] = useState(m.si || (holes === 18 ? DEFAULT_SI_18 : DEFAULT_SI_9));
-  useEffect(() => {
-    if (pars.length !== holes) setPars(holes === 18 ? DEFAULT_PARS_18 : DEFAULT_PARS_9);
-    if (si.length !== holes) setSi(holes === 18 ? DEFAULT_SI_18 : DEFAULT_SI_9);
-  }, [holes]);
-  const updatePar = (i, val) => setPars(prev => { const a = [...prev]; a[i] = Number(val) || 1; return a; });
-  const updateSi = (i, val) => setSi(prev => { const a = [...prev]; a[i] = Number(val) || 1; return a; });
-
   const setHcpCount = (n) => {
     const next = HCP_LETTERS.slice(0, n).map((letter, i) => hcpClasses[i] || { id: letter, from: '', to: '', prizeCount: 3 });
     setHcpClasses(next);
@@ -364,7 +358,6 @@ function TournamentSetup({ tournament, reload }) {
       hcpClasses: classificationMode === 'hcp' ? hcpClasses : [],
       rounds, adminPin,
       scoringMode,
-      pars, si,
       herrenTee, damenTee,
       bruttoClasses,
     };
@@ -488,24 +481,19 @@ function TournamentSetup({ tournament, reload }) {
       </div>
 
       <Field label="Platzkarte: Par & Vorgabe (Stroke Index)">
-        <div style={{ fontSize: 12, color: C.muted, marginBottom: 10 }}>Gilt für alle vier Tees (Weiß/Gelb/Blau/Rot) gleichermaßen. Die eigentliche Course-Handicap-Zahl kommt pro Spieler aus der Startliste.</div>
-        <div style={{ fontSize: 11, fontWeight: 600, color: C.inkDim, marginBottom: 4, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <span>Par</span>
-          <button type="button" onClick={() => { setPars(holes === 18 ? DEFAULT_PARS_18 : DEFAULT_PARS_9); setSi(holes === 18 ? DEFAULT_SI_18 : DEFAULT_SI_9); }} style={{ ...smallBtn, padding: '3px 8px', fontSize: 10 }}>GC-Landshut-Standardwerte laden</button>
-        </div>
+        <div style={{ fontSize: 12, color: C.muted, marginBottom: 10 }}>Fest hinterlegt für GC Landshut, gilt für alle Turniere und alle vier Tees gleichermaßen – nicht editierbar. Die eigentliche Course-Handicap-Zahl kommt pro Spieler aus der Startliste.</div>
+        <div style={{ fontSize: 11, fontWeight: 600, color: C.inkDim, marginBottom: 4 }}>Par</div>
         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 10 }}>
-          {pars.map((v, i) => (
-            <input key={i} type="number" value={v} onChange={e => updatePar(i, e.target.value)}
-              title={`Par Loch ${i + 1}`}
-              style={{ width: 34, padding: '4px 2px', textAlign: 'center', fontSize: 11, border: `1px solid ${C.line}`, borderRadius: 4, background: C.board }} />
+          {courseFor(holes).pars.map((v, i) => (
+            <span key={i} title={`Par Loch ${i + 1}`}
+              style={{ width: 28, textAlign: 'center', fontSize: 11, color: C.inkDim, background: C.board, borderRadius: 4, padding: '4px 0' }}>{v}</span>
           ))}
         </div>
         <div style={{ fontSize: 11, fontWeight: 600, color: C.inkDim, marginBottom: 4 }}>Vorgabe (Index)</div>
         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-          {si.map((v, i) => (
-            <input key={i} type="number" value={v} onChange={e => updateSi(i, e.target.value)}
-              title={`Index Loch ${i + 1}`}
-              style={{ width: 34, padding: '4px 2px', textAlign: 'center', fontSize: 11, border: `1px solid ${C.line}`, borderRadius: 4 }} />
+          {courseFor(holes).si.map((v, i) => (
+            <span key={i} title={`Index Loch ${i + 1}`}
+              style={{ width: 28, textAlign: 'center', fontSize: 11, color: C.inkDim, background: C.board, borderRadius: 4, padding: '4px 0' }}>{v}</span>
           ))}
         </div>
       </Field>
@@ -728,8 +716,11 @@ function PublicLeaderboard({ tournament, err }) {
   const bruttoClasses = m.bruttoClasses || [{ id: 'Brutto', label: 'Brutto', prizeCount: m.prizeCount || 3 }];
   const hcpClassesWithPrize = (m.hcpClasses || []).map(c => ({ ...c, prizeCount: c.prizeCount || 3 }));
 
+  const NETTO_CM_ID = 'NettoCM';
+  const showNettoCM = m.classificationMode === 'fixed' && m.type === 'clubmeisterschaft';
+
   const classIds = m.classificationMode === 'fixed'
-    ? m.fixedClasses
+    ? [...m.fixedClasses, ...(showNettoCM ? [NETTO_CM_ID] : [])]
     : [...bruttoClasses.map(c => c.id), ...hcpClassesWithPrize.map(c => c.id)];
   const [activeClass, setActiveClass] = useState(classIds[0]);
   const [activeRound, setActiveRound] = useState((m.rounds && m.rounds[m.rounds.length - 1].id) || 1);
@@ -765,7 +756,7 @@ function PublicLeaderboard({ tournament, err }) {
       Object.entries(s).forEach(([holeIdx, val]) => {
         if (!isNumericScore(val)) return;
         gross += Number(val);
-        par += m.pars[Number(holeIdx)] || 0;
+        par += courseFor(m.holes).pars[Number(holeIdx)] || 0;
         any = true;
       });
     });
@@ -782,8 +773,8 @@ function PublicLeaderboard({ tournament, err }) {
         if (!isEntered(val)) return;
         played = true;
         const holeIdx = Number(holeIdxStr);
-        const par = m.pars[holeIdx];
-        const si = m.si[holeIdx];
+        const par = courseFor(m.holes).pars[holeIdx];
+        const si = courseFor(m.holes).si[holeIdx];
         if (val === STRICH) {
           strich = true;
           grossPts += 0; netPts += 0;
@@ -801,16 +792,22 @@ function PublicLeaderboard({ tournament, err }) {
 
   const rows = Object.entries(players).map(([id, p]) => {
     const thruScores = findPlayerRoundScores(id, activeRound);
+    // Netto-Klubmeisterschaft läuft als eigenständige Stableford-Netto-Wertung, unabhängig vom
+    // gewählten Haupt-Scoring-Modus des Turniers (Zählspiel für die Brutto-Klassen).
+    const cmNetto = showNettoCM ? stablefordTotalsAcrossRounds(id, p.hcp, p.tee).netPts : null;
     if (isStableford) {
       const { grossPts, netPts, gbe } = stablefordTotalsAcrossRounds(id, p.hcp, p.tee);
-      return { id, ...p, grossPts, netPts, gbe, thru: holesPlayed(thruScores) };
+      return { id, ...p, grossPts, netPts, gbe, cmNetto, thru: holesPlayed(thruScores) };
     }
     const { gross, par } = totalsAcrossRounds(id);
     const grossToPar = gross === null ? null : gross - par;
     const net = gross === null ? null : Math.round(gross - p.hcp);
     const netToPar = net === null ? null : net - par;
-    return { id, ...p, gross, grossToPar, net, netToPar, thru: holesPlayed(thruScores) };
+    return { id, ...p, gross, grossToPar, net, netToPar, cmNetto, thru: holesPlayed(thruScores) };
   });
+
+  // Baseline für die Netto-Klubmeisterschaft: 2 Punkte pro Loch (Par) über alle konfigurierten Runden.
+  const cmNettoBaseline = (m.rounds || []).length * m.holes * 2;
 
   const fmtToPar = (v) => v === null ? '–' : v === 0 ? 'E' : v > 0 ? '+' + v : String(v);
 
@@ -829,9 +826,14 @@ function PublicLeaderboard({ tournament, err }) {
   const activeHcpClass = hcpClassesWithPrize.find(c => c.id === activeClass);
 
   let visibleRows;
-  if (m.classificationMode === 'fixed') {
+  if (activeClass === NETTO_CM_ID) {
+    // Netto-Klubmeisterschaft: eine einzige kombinierte Wertung über alle Teilnehmer, unabhängig von Klasse.
+    visibleRows = rows.filter(r => r.cmNetto !== null);
+    visibleRows.sort((a, b) => (b.cmNetto ?? -999) - (a.cmNetto ?? -999));
+  } else if (m.classificationMode === 'fixed') {
+    // Feste Klassen (Herren/Damen/AK/Jugend) entscheiden nach Brutto.
     visibleRows = rows.filter(r => (r.classes || []).includes(activeClass));
-    visibleRows.sort((a, b) => isStableford ? (b.netPts ?? -1) - (a.netPts ?? -1) : (a.netToPar ?? 999) - (b.netToPar ?? 999));
+    visibleRows.sort((a, b) => (a.grossToPar ?? 999) - (b.grossToPar ?? 999));
   } else if (activeBruttoClass) {
     visibleRows = rows.filter(r => (isStableford ? r.grossPts !== null : r.gross !== null) && (!activeBruttoClass.gender || r.geschlecht === activeBruttoClass.gender));
     visibleRows.sort((a, b) => isStableford ? (b.grossPts ?? -1) - (a.grossPts ?? -1) : (a.grossToPar ?? 999) - (b.grossToPar ?? 999));
@@ -896,17 +898,27 @@ function PublicLeaderboard({ tournament, err }) {
           </div>
         )}
 
-        <div style={{ display: 'flex', gap: 6, padding: '12px 16px', borderBottom: `1px solid ${C.line}`, overflowX: 'auto' }}>
-          {classIds.map(c => {
+        <div style={{ display: 'flex', gap: 6, padding: '12px 16px 6px', borderBottom: showNettoCM ? 'none' : `1px solid ${C.line}`, overflowX: 'auto' }}>
+          {classIds.filter(c => c !== NETTO_CM_ID).map(c => {
             const bc = bruttoClasses.find(x => x.id === c);
             return (
             <button key={c} onClick={() => setActiveClass(c)}
               style={{ flexShrink: 0, fontSize: 12, padding: '5px 12px', borderRadius: 6, border: `1px solid ${activeClass === c ? C.ink : C.line}`, background: activeClass === c ? C.ink : '#fff', color: activeClass === c ? '#fff' : C.ink, cursor: 'pointer' }}>
-              {bc ? bc.label : c}
+              {bc ? bc.label : (m.classificationMode === 'fixed' ? c : `Netto ${c}`)}
             </button>
             );
           })}
         </div>
+
+        {showNettoCM && (
+          <div style={{ padding: '6px 16px 12px', borderBottom: `1px solid ${C.line}` }}>
+            <div style={{ fontSize: 10, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 6 }}>Sonderwertung</div>
+            <button onClick={() => setActiveClass(NETTO_CM_ID)}
+              style={{ fontSize: 12, padding: '5px 12px', borderRadius: 6, border: `1px solid ${activeClass === NETTO_CM_ID ? C.gold : C.line}`, background: activeClass === NETTO_CM_ID ? C.gold : '#fff', color: activeClass === NETTO_CM_ID ? '#fff' : C.ink, cursor: 'pointer', fontWeight: 600 }}>
+              🏅 Netto-Klubmeisterschaft
+            </button>
+          </div>
+        )}
 
         {excludedNote && (
           <div style={{ padding: '8px 20px', fontSize: 11, color: C.muted, background: C.board, borderBottom: `1px solid ${C.line}` }}>
@@ -928,7 +940,16 @@ function PublicLeaderboard({ tournament, err }) {
                 </div>
               </div>
               <div style={{ textAlign: 'right' }}>
-                {isStableford ? (
+                {activeClass === NETTO_CM_ID ? (
+                  <>
+                    <div style={{ fontSize: tier ? tier.size : 16, fontWeight: tier ? tier.weight : 600, color: tier ? tier.color : C.ink }}>
+                      {fmtToPar(r.cmNetto - cmNettoBaseline)}
+                    </div>
+                    <div style={{ fontSize: 10, color: C.muted }}>
+                      {r.cmNetto ?? '–'} Punkte
+                    </div>
+                  </>
+                ) : isStableford ? (
                   <>
                     <div style={{ fontSize: tier ? tier.size : 16, fontWeight: tier ? tier.weight : 600, color: tier ? tier.color : C.ink }}>
                       {(activeBruttoClass ? r.grossPts : r.netPts) ?? '–'} Pkt.
@@ -973,7 +994,8 @@ function ScoreDetailModal({ tournament, playerId, initialRound, findPlayerRoundS
   const p = tournament.players[playerId];
   const [round, setRound] = useState(initialRound);
   const scores = findPlayerRoundScores(playerId, round);
-  const pars = m.pars, si = m.si, holes = m.holes;
+  const holes = m.holes;
+  const { pars, si } = courseFor(holes);
 
   const scoreStyle = (diff) => {
     if (diff <= -2) return { bg: C.eagle, col: '#3d2e00' };
@@ -1105,7 +1127,7 @@ function SoloEntry({ tournament, flightId, reload }) {
           <div style={{ textAlign: 'center' }}>
             <div style={{ fontSize: 11, color: C.muted }}>Loch</div>
             <div style={{ fontSize: 32, fontWeight: 600 }}>{hole}</div>
-            <div style={{ fontSize: 11, color: C.muted }}>Par {m.pars[hole - 1]}</div>
+            <div style={{ fontSize: 11, color: C.muted }}>Par {courseFor(m.holes).pars[hole - 1]}</div>
           </div>
           <button onClick={() => setHole(h => Math.min(m.holes, h + 1))} style={circleBtn}>›</button>
         </div>
@@ -1114,8 +1136,8 @@ function SoloEntry({ tournament, flightId, reload }) {
           {players.map(p => {
             const raw = scores[p.id] && scores[p.id][hole - 1];
             const struck = raw === STRICH;
-            const cur = isNumericScore(raw) ? Number(raw) : m.pars[hole - 1];
-            const playerSi = m.si[hole - 1];
+            const cur = isNumericScore(raw) ? Number(raw) : courseFor(m.holes).pars[hole - 1];
+            const playerSi = courseFor(m.holes).si[hole - 1];
             return (
               <div key={p.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', background: C.board, borderRadius: 8 }}>
                 <div>
@@ -1126,14 +1148,14 @@ function SoloEntry({ tournament, flightId, reload }) {
                   {struck ? (
                     <>
                       <span style={{ fontSize: 13, color: C.muted, minWidth: 40, textAlign: 'center' }}>Strich</span>
-                      <button onClick={() => setScore(p.id, m.pars[hole - 1])} style={{ ...smallBtn, padding: '5px 10px' }}>Zurück</button>
+                      <button onClick={() => setScore(p.id, courseFor(m.holes).pars[hole - 1])} style={{ ...smallBtn, padding: '5px 10px' }}>Zurück</button>
                     </>
                   ) : (
                     <>
                       <button onClick={() => setScore(p.id, Math.max(1, cur - 1))} style={smallCircleBtn}>−</button>
                       <span style={{ fontSize: 18, fontWeight: 600, minWidth: 20, textAlign: 'center' }}>{cur}</span>
                       <button onClick={() => setScore(p.id, cur + 1)} style={smallCircleBtn}>+</button>
-                      <button onClick={() => setScore(p.id, STRICH)} title="Loch aufgeben" style={{ ...smallBtn, padding: '5px 8px', fontSize: 11, color: C.muted, marginLeft: 4 }}>Strich</button>
+                      <button onClick={() => { if (window.confirm(`${p.name}: Loch ${hole} wirklich als Strich (aufgegeben, 0 Punkte) eintragen?`)) setScore(p.id, STRICH); }} title="Loch aufgeben" style={{ ...smallBtn, padding: '5px 8px', fontSize: 11, color: C.muted, marginLeft: 4 }}>Strich</button>
                     </>
                   )}
                 </div>
