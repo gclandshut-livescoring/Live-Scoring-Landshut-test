@@ -1121,6 +1121,8 @@ function ScoreDetailModal({ tournament, playerId, initialRound, findPlayerRoundS
     return { bg: C.dblbogey, col: '#fff' };
   };
 
+  const isStableford = m.scoringMode === 'stableford';
+
   const renderBlock = (startIdx, count) => {
     const cells = [];
     let blockSum = 0, blockHasAny = false;
@@ -1131,10 +1133,22 @@ function ScoreDetailModal({ tournament, playerId, initialRound, findPlayerRoundS
       if (hasScore) { blockSum += Number(s); blockHasAny = true; }
       const diff = hasScore ? Number(s) - pars[i] : null;
       const st = hasScore ? scoreStyle(diff) : { bg: 'transparent', col: C.muted };
+      // Netto-Stableford-Punkte klein in der Ecke, damit man auf einen Blick nachvollziehen kann,
+      // wie sich die Nettopunkte pro Loch zusammensetzen (Vorgabe-Schlag + Punkte-Skala).
+      let netPtsBadge = null;
+      if (isStableford && hasScore) {
+        const strokes = strokesOnHole(p.hcp, si[i], holes);
+        const netScore = Number(s) - strokes;
+        const netPts = stablefordPoints(netScore - pars[i]);
+        netPtsBadge = netPts;
+      }
       cells.push(
-        <td key={i} style={{ padding: '4px 2px', textAlign: 'center' }}>
+        <td key={i} style={{ padding: '7px 2px', textAlign: 'center' }}>
           <span style={{ position: 'relative', display: 'inline-flex', width: 26, height: 26, alignItems: 'center', justifyContent: 'center', borderRadius: '50%', background: st.bg, color: st.col, fontWeight: 500, fontSize: 13 }}>
             {hasScore ? s : struck ? '✕' : '–'}
+            {netPtsBadge !== null && (
+              <span style={{ position: 'absolute', bottom: -3, right: -3, fontSize: 8, fontWeight: 600, color: C.accent }}>{netPtsBadge}</span>
+            )}
           </span>
         </td>
       );
@@ -1152,7 +1166,7 @@ function ScoreDetailModal({ tournament, playerId, initialRound, findPlayerRoundS
       );
     }
     return (
-      <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 8 }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 16 }}>
         <tbody>
           <tr><td style={{ padding: '3px 6px', fontSize: 10, color: C.muted, textAlign: 'left' }}>Loch</td>{holeRow}<td style={{ padding: '3px', textAlign: 'center', fontSize: 10, color: C.muted }}>{startIdx === 0 ? 'Out' : 'In'}</td></tr>
           <tr><td style={{ padding: '3px 6px', fontSize: 10, color: C.muted, textAlign: 'left' }}>Par</td>{parRow}<td /></tr>
