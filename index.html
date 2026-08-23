@@ -528,13 +528,14 @@ function TournamentSetup({ tournament, reload }) {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {FIXED_CLASSES.map(cls => {
               const cfg = classConfig[cls] || { rounds: [], tee: 'Weiß' };
+              const cfgRounds = cfg.rounds || [];
               return (
                 <div key={cls} style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', background: C.board, borderRadius: 8, padding: '8px 10px' }}>
                   <span style={{ fontSize: 13, fontWeight: 600, color: C.inkDim, width: 60 }}>{cls}</span>
                   <div style={{ display: 'flex', gap: 8 }}>
                     {rounds.map(r => (
                       <label key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, color: C.inkDim }}>
-                        <input type="checkbox" checked={cfg.rounds.includes(r.id)} onChange={() => toggleClassRound(cls, r.id)} />
+                        <input type="checkbox" checked={cfgRounds.includes(r.id)} onChange={() => toggleClassRound(cls, r.id)} />
                         {r.label}
                       </label>
                     ))}
