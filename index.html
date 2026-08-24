@@ -1214,6 +1214,33 @@ function ScoreDetailModal({ tournament, playerId, initialRound, findPlayerRoundS
   const holes = m.holes;
   const { pars, si } = courseFor(holes);
 
+  // Gesamtstand über alle Runden der Klasse, damit er oben neben dem Namen angezeigt werden kann.
+  const totalDisplay = (() => {
+    const isStbl = m.scoringMode === 'stableford';
+    let gross = 0, parSum = 0, pts = 0, any = false;
+    modalRounds.forEach(r => {
+      const s = findPlayerRoundScores(playerId, r.id);
+      Object.entries(s).forEach(([hiStr, val]) => {
+        if (!isEntered(val)) return;
+        any = true;
+        const hi = Number(hiStr);
+        if (val === STRICH) return;
+        gross += Number(val);
+        parSum += pars[hi] || 0;
+        const net = Number(val) - strokesOnHole(p.hcp, si[hi], holes);
+        pts += stablefordPoints(net - pars[hi]);
+      });
+    });
+    if (!any) return null;
+    if (isStbl) return { text: `${pts} Pkt.`, color: C.ink };
+    const net = Math.round(gross - p.hcp);
+    const toPar = net - parSum;
+    return {
+      text: toPar === 0 ? 'PAR' : toPar > 0 ? '+' + toPar : String(toPar),
+      color: toPar === 0 ? C.muted : toPar < 0 ? C.red : C.ink,
+    };
+  })();
+
   const scoreStyle = (diff) => {
     if (diff <= -2) return { bg: C.eagle, col: '#3d2e00' };
     if (diff === -1) return { bg: C.birdie, col: '#fff' };
@@ -1256,7 +1283,7 @@ function ScoreDetailModal({ tournament, playerId, initialRound, findPlayerRoundS
     }
     let holeRow = [], parRow = [];
     for (let i = startIdx; i < startIdx + count; i++) {
-      holeRow.push(<td key={i} style={{ padding: '3px', textAlign: 'center', fontSize: 11, color: C.muted }}>{i + 1}</td>);
+      holeRow.push(<td key={i} style={{ padding: '3px', textAlign: 'center', fontSize: 12, fontWeight: 600, color: C.inkDim }}>{i + 1}</td>);
       parRow.push(
         <td key={i} style={{ padding: '3px', textAlign: 'center', fontSize: 11, color: C.muted, position: 'relative' }}>
           <span style={{ position: 'relative', display: 'inline-block' }}>
@@ -1269,7 +1296,7 @@ function ScoreDetailModal({ tournament, playerId, initialRound, findPlayerRoundS
     return (
       <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 16 }}>
         <tbody>
-          <tr><td style={{ padding: '3px 6px', fontSize: 10, color: C.muted, textAlign: 'left' }}>Loch</td>{holeRow}<td style={{ padding: '3px', textAlign: 'center', fontSize: 10, color: C.muted }}>{startIdx === 0 ? 'Out' : 'In'}</td></tr>
+          <tr><td style={{ padding: '3px 6px', fontSize: 11, fontWeight: 600, color: C.inkDim, textAlign: 'left' }}>Loch</td>{holeRow}<td style={{ padding: '3px', textAlign: 'center', fontSize: 11, fontWeight: 600, color: C.inkDim }}>{startIdx === 0 ? 'Out' : 'In'}</td></tr>
           <tr><td style={{ padding: '3px 6px', fontSize: 10, color: C.muted, textAlign: 'left' }}>Par</td>{parRow}<td /></tr>
           <tr style={{ background: C.board }}>
             <td style={{ padding: '5px 6px', fontSize: 11, fontWeight: 500, textAlign: 'left', borderTop: `1.5px solid ${C.ink}`, borderBottom: `1.5px solid ${C.ink}`, borderLeft: `1.5px solid ${C.ink}`, borderRadius: '6px 0 0 6px' }}>Score</td>
@@ -1287,11 +1314,15 @@ function ScoreDetailModal({ tournament, playerId, initialRound, findPlayerRoundS
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16, zIndex: 50 }} onClick={onClose}>
       <div style={{ background: C.card, borderRadius: 12, width: '100%', maxWidth: 420, overflow: 'hidden' }} onClick={e => e.stopPropagation()}>
         <div style={{ padding: '16px 20px 0' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <div>
-              <div style={{ fontSize: 16, fontWeight: 600 }}>{lastNameFirst(p.name)} <span style={{ fontSize: 12, fontWeight: 400, color: C.muted }}>(hcp {p.hcp} · {p.tee || TEE_IDS[0]})</span></div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 16, fontWeight: 600 }}>{lastNameFirst(p.name)}</span>
+              <span style={{ fontSize: 12, fontWeight: 400, color: C.muted }}>(Hcp {p.hcp})</span>
+              {totalDisplay && (
+                <span style={{ fontSize: 17, fontWeight: 700, color: totalDisplay.color, marginLeft: 2 }}>{totalDisplay.text}</span>
+              )}
             </div>
-            <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 18, cursor: 'pointer', color: C.muted }}>×</button>
+            <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 18, cursor: 'pointer', color: C.muted, flexShrink: 0 }}>×</button>
           </div>
           {modalRounds.length > 1 && (
             <div style={{ display: 'flex', gap: 6, margin: '12px 0' }}>
