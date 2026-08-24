@@ -928,15 +928,22 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
     return {};
   };
 
-  // Ermittelt die Runde, die gerade gespielt wird: die erste, die noch nicht von allen Spielern
-  // vollständig eingetragen ist. Sind alle Runden fertig, bleibt die letzte stehen.
+  // Ermittelt die Runde, die gerade gespielt wird: bleibt auf Runde 1 stehen, bis Runde 1 von allen
+  // dafür vorgesehenen Spielern komplett eingetragen ist, springt dann auf Runde 2 usw.
+  // Spieler, deren Klasse eine Runde gar nicht spielt (z. B. Damen in Runde 3), zählen dabei nicht mit.
   const currentRoundId = (() => {
     const rounds = m.rounds || [];
     if (!rounds.length) return 1;
-    const playerIds = Object.keys(players);
-    if (!playerIds.length) return rounds[0].id;
+    const playerEntries = Object.entries(players);
+    if (!playerEntries.length) return rounds[0].id;
     for (const r of rounds) {
-      const allDone = playerIds.every(pid => Object.values(findPlayerRoundScores(pid, r.id)).filter(isEntered).length >= m.holes);
+      const eligible = playerEntries.filter(([, p]) => {
+        const cls = p.classes && p.classes[0];
+        if (m.classificationMode !== 'fixed' || !cls) return true;
+        return classRoundIdsFor(m, cls).includes(r.id);
+      });
+      if (!eligible.length) continue; // Runde betrifft niemanden -> überspringen
+      const allDone = eligible.every(([pid]) => Object.values(findPlayerRoundScores(pid, r.id)).filter(isEntered).length >= m.holes);
       if (!allDone) return r.id;
     }
     return rounds[rounds.length - 1].id;
@@ -1202,7 +1209,7 @@ function ScoreDetailModal({ tournament, playerId, initialRound, findPlayerRoundS
   const p = tournament.players[playerId];
   const playerClass = (p.classes && p.classes[0]) || null;
   const modalRounds = m.classificationMode === 'fixed' && playerClass ? classRoundsFor(m, playerClass) : (m.rounds || []);
-  const [round, setRound] = useState(modalRounds.some(r => r.id === initialRound) ? initialRound : (modalRounds[modalRounds.length - 1] || {}).id);
+  const [round, setRound] = useState(modalRounds.some(r => r.id === initialRound) ? initialRound : (modalRounds[0] || {}).id);
   const scores = findPlayerRoundScores(playerId, round);
   const holes = m.holes;
   const { pars, si } = courseFor(holes);
