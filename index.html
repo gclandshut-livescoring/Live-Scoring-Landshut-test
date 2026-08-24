@@ -773,16 +773,20 @@ function PlayerAdmin({ tournament, reload }) {
 function FlightAdmin({ tournament, reload }) {
   const players = (tournament && tournament.players) || {};
   const flights = (tournament && tournament.flights) || {};
+  const meta = (tournament && tournament.meta) || {};
+  const allRounds = meta.rounds || [];
   const [name, setName] = useState('');
   const [selected, setSelected] = useState([]);
+  const [selectedRounds, setSelectedRounds] = useState(allRounds.map(r => r.id));
 
   const toggle = (id) => setSelected(sel => sel.includes(id) ? sel.filter(x => x !== id) : [...sel, id]);
+  const toggleRound = (rid) => setSelectedRounds(sel => sel.includes(rid) ? sel.filter(x => x !== rid) : [...sel, rid]);
 
   const createFlight = async () => {
-    if (!name || selected.length === 0) return;
+    if (!name || selected.length === 0 || selectedRounds.length === 0) return;
     const id = newId();
-    await fbPatch('tournament/flights/' + id, { name, playerIds: selected, token: genToken(), password: genPassword() });
-    setName(''); setSelected([]);
+    await fbPatch('tournament/flights/' + id, { name, playerIds: selected, rounds: selectedRounds, token: genToken(), password: genPassword() });
+    setName(''); setSelected([]); setSelectedRounds(allRounds.map(r => r.id));
     await reload();
   };
 
@@ -806,6 +810,19 @@ function FlightAdmin({ tournament, reload }) {
             </button>
           ))}
         </div>
+        {allRounds.length > 1 && (
+          <div style={{ marginBottom: 10 }}>
+            <div style={{ fontSize: 12, color: C.inkDim, marginBottom: 6 }}>Für welche Runde(n) gilt dieser Flight/Link? (z. B. Samstag-Flight = Runde 1+2, Sonntag-Flight nach Ergebnis neu gemischt = nur Runde 3)</div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {allRounds.map(r => (
+                <label key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, color: C.inkDim, background: C.board, padding: '4px 10px', borderRadius: 6 }}>
+                  <input type="checkbox" checked={selectedRounds.includes(r.id)} onChange={() => toggleRound(r.id)} />
+                  {r.label}
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
         <button onClick={createFlight} style={smallBtn}>+ Flight erstellen</button>
       </div>
 
@@ -816,7 +833,10 @@ function FlightAdmin({ tournament, reload }) {
               <span style={{ fontWeight: 600, fontSize: 14 }}>{f.name}</span>
               <button onClick={() => removeFlight(id)} style={{ ...smallBtn, color: C.red }}>Entfernen</button>
             </div>
-            <div style={{ fontSize: 12, color: C.muted, marginBottom: 8 }}>{(f.playerIds || []).map(pid => players[pid]?.name).filter(Boolean).join(', ')}</div>
+            <div style={{ fontSize: 12, color: C.muted, marginBottom: 4 }}>{(f.playerIds || []).map(pid => players[pid]?.name).filter(Boolean).join(', ')}</div>
+            {f.rounds && allRounds.length > 1 && (
+              <div style={{ fontSize: 11, color: C.accent, marginBottom: 8 }}>Gilt für: {allRounds.filter(r => f.rounds.includes(r.id)).map(r => r.label).join(', ')}</div>
+            )}
             <div style={{ fontSize: 12, color: C.inkDim, wordBreak: 'break-all', background: C.board, padding: '8px 10px', borderRadius: 6 }}>
               {baseUrl}?m={f.token}
             </div>
@@ -879,12 +899,21 @@ function PublicLeaderboard({ tournament, err }) {
 
   // Alle Scores eines Spielers über eine Runde finden (Flight-Zuordnung)
   const findPlayerRoundScores = (playerId, roundId) => {
+    // Bevorzugt den Flight, der explizit für diese Runde zuständig ist (wichtig, wenn ein Spieler an
+    // verschiedenen Tagen in unterschiedlichen Flights steht, z. B. Samstag Runde 1+2, Sonntag Runde 3
+    // in neuer Zusammensetzung). Fällt zurück auf irgendeinen Flight mit dem Spieler, falls kein Flight
+    // explizit Runden zugewiesen hat (Altbestand).
+    let fallbackFid = null;
     for (const fid of Object.keys(flights)) {
       const f = flights[fid];
-      if ((f.playerIds || []).includes(playerId)) {
-        return (scores[fid] && scores[fid][roundId] && scores[fid][roundId][playerId]) || {};
+      if (!(f.playerIds || []).includes(playerId)) continue;
+      if (f.rounds && f.rounds.length) {
+        if (f.rounds.includes(roundId)) return (scores[fid] && scores[fid][roundId] && scores[fid][roundId][playerId]) || {};
+      } else if (fallbackFid === null) {
+        fallbackFid = fid;
       }
     }
+    if (fallbackFid !== null) return (scores[fallbackFid] && scores[fallbackFid][roundId] && scores[fallbackFid][roundId][playerId]) || {};
     return {};
   };
 
@@ -1251,10 +1280,14 @@ function SoloEntry({ tournament, flightId, reload }) {
   const allFlightScores = (tournament.scores && tournament.scores[flightId]) || {};
 
   // Jeder Spieler hat (bei fester Klassifizierung) seine eigene Rundenliste, abhängig von seiner Klasse
-  // (z. B. Herren 3 Runden, Damen 2 Runden) – wichtig bei gemischten Flights.
+  // (z. B. Herren 3 Runden, Damen 2 Runden). Zusätzlich schränkt der Flight selbst ein, für welche Runde(n)
+  // DIESER Link gilt (z. B. Samstag-Flight nur Runde 1+2, neu gemischter Sonntag-Flight nur Runde 3) –
+  // wichtig, wenn sich die Flight-Zusammensetzung zwischen den Runden ändert.
   const playerRoundIds = (p) => {
     const cls = p.classes && p.classes[0];
-    return m.classificationMode === 'fixed' && cls ? classRoundIdsFor(m, cls) : (m.rounds || []).map(r => r.id);
+    const classRounds = m.classificationMode === 'fixed' && cls ? classRoundIdsFor(m, cls) : (m.rounds || []).map(r => r.id);
+    if (flight.rounds && flight.rounds.length) return classRounds.filter(id => flight.rounds.includes(id));
+    return classRounds;
   };
   const isPlayerRoundComplete = (p, roundId) => {
     const s = (allFlightScores[roundId] && allFlightScores[roundId][p.id]) || {};
