@@ -540,7 +540,7 @@ function TournamentSetup({ tournament, reload }) {
                       </label>
                     ))}
                   </div>
-                  <select value={cfg.tee} onChange={e => setClassTeeVal(cls, e.target.value)} style={{ ...inputStyle, width: 130 }}>
+                  <select value={cfg.tee || 'Weiß'} onChange={e => setClassTeeVal(cls, e.target.value)} style={{ ...inputStyle, width: 130 }}>
                     <optgroup label="Herren">
                       <option value="Weiß">Weiß (CR 72.8)</option>
                       <option value="Gelb">Gelb (CR 71.1)</option>
@@ -635,18 +635,39 @@ function PlayerAdmin({ tournament, reload }) {
   const fileRef = useRef(null);
 
   // Tee wird automatisch aus Geschlecht + Turniereinstellung (Herren/Damen spielen von...) abgeleitet.
-  const teeForGeschlecht = (g) => g === 'w' ? (meta.damenTee || 'Blau') : (meta.herrenTee || 'Weiß');
+  // Bei fester Klassifizierung (Clubmeisterschaft) kommt der Abschlag aus der Klassen-Konfiguration
+  // (z. B. Herren -> Weiß), nicht aus der allgemeinen Herren/Damen-Einstellung (die nur für Klubturniere gilt).
+  const teeForGeschlecht = (g, selectedClass) => {
+    if (meta.classificationMode === 'fixed' && selectedClass && meta.classConfig && meta.classConfig[selectedClass] && meta.classConfig[selectedClass].tee) {
+      return meta.classConfig[selectedClass].tee;
+    }
+    return g === 'w' ? (meta.damenTee || 'Blau') : (meta.herrenTee || 'Weiß');
+  };
 
   const addPlayer = async () => {
     if (!name || hcp === '') return;
     const id = newId();
-    await fbPatch('tournament/players/' + id, { name, hcp: Number(hcp), classes: cls ? [cls] : [], geschlecht, tee: teeForGeschlecht(geschlecht) });
+    await fbPatch('tournament/players/' + id, { name, hcp: Number(hcp), classes: cls ? [cls] : [], geschlecht, tee: teeForGeschlecht(geschlecht, cls) });
     setName(''); setHcp('');
     await reload();
   };
 
   const removePlayer = async (id) => {
     await fbPut('tournament/players/' + id, null);
+    await reload();
+  };
+
+  // Berechnet für alle bestehenden Spieler das Tee neu (z. B. nach nachträglicher Änderung der
+  // Klassen-Konfiguration) – nötig, weil bereits gespeicherte Spieler ihr Tee nicht automatisch aktualisieren.
+  const recalcAllTees = async () => {
+    const updates = {};
+    Object.entries(players).forEach(([id, p]) => {
+      const cls = p.classes && p.classes[0];
+      const correctTee = teeForGeschlecht(p.geschlecht, cls);
+      if (p.tee !== correctTee) updates[id] = { tee: correctTee };
+    });
+    if (Object.keys(updates).length === 0) return;
+    await Promise.all(Object.entries(updates).map(([id, val]) => fbPatch('tournament/players/' + id, val)));
     await reload();
   };
 
@@ -672,7 +693,7 @@ function PlayerAdmin({ tournament, reload }) {
         const pflight = parts[idx];
         if (!pname || phcp === undefined) return;
         const id = newId();
-        playerUpdates[id] = { name: pname, hcp: Number(phcp), classes: pcls ? [pcls] : [], geschlecht: pg, tee: teeForGeschlecht(pg) };
+        playerUpdates[id] = { name: pname, hcp: Number(phcp), classes: pcls ? [pcls] : [], geschlecht: pg, tee: teeForGeschlecht(pg, pcls) };
         if (pflight) {
           if (!flightGroups[pflight]) flightGroups[pflight] = [];
           flightGroups[pflight].push(id);
@@ -726,12 +747,16 @@ function PlayerAdmin({ tournament, reload }) {
         </div>
       </div>
 
+      {Object.keys(players).length > 0 && (
+        <button onClick={recalcAllTees} style={{ ...smallBtn, alignSelf: 'flex-start' }}>Tees aller Spieler neu berechnen (nach Klassen-Konfiguration)</button>
+      )}
+
       <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, overflow: 'hidden' }}>
         {Object.entries(players).map(([id, p]) => (
           <div key={id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 16px', borderBottom: `1px solid ${C.line}` }}>
             <div>
               <span style={{ fontSize: 14, fontWeight: 500 }}>{p.name}</span>
-              <span style={{ fontSize: 12, color: C.muted, marginLeft: 8 }}>Hcp {p.hcp} · {p.geschlecht === 'w' ? 'Dame' : 'Herr'} · Tee {p.tee || teeForGeschlecht(p.geschlecht)} {p.classes && p.classes.length ? '· ' + p.classes.join(', ') : ''}</span>
+              <span style={{ fontSize: 12, color: C.muted, marginLeft: 8 }}>Hcp {p.hcp} · {p.geschlecht === 'w' ? 'Dame' : 'Herr'} · Tee {p.tee || teeForGeschlecht(p.geschlecht, p.classes && p.classes[0])} {p.classes && p.classes.length ? '· ' + p.classes.join(', ') : ''}</span>
             </div>
             <button onClick={() => removePlayer(id)} style={{ ...smallBtn, color: C.red }}>Entfernen</button>
           </div>
