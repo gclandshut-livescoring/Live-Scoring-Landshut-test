@@ -1026,7 +1026,10 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
   const fmtToPar = (v) => v === null ? '–' : v === 0 ? 'E' : v > 0 ? '+' + v : String(v);
   // Score-Farbe nach Par: unter Par rot, ausgeglichen "PAR" in grau, über Par schwarz.
   const scoreColorFor = (v) => v === null ? C.muted : v === 0 ? C.muted : v < 0 ? C.red : C.ink;
-  const scoreTextFor = (v) => v === null ? '–' : v === 0 ? 'PAR' : v > 0 ? '+' + v : String(v);
+  // Vor dem ersten Score gilt ein Spieler als "PAR" (weder über noch unter Par), nicht als "–".
+  const scoreTextFor = (v) => v === null ? 'PAR' : v === 0 ? 'PAR' : v > 0 ? '+' + v : String(v);
+  // Loch-Spalte: vor dem Start ein Strich, nach dem letzten Loch "F" (final).
+  const thruTextFor = (thru) => thru === 0 ? '–' : thru >= m.holes ? 'F' : String(thru);
 
   // Ermittelt den Brutto-Sieger für eine bestimmte Brutto-Klasse (ggf. nach Geschlecht gefiltert),
   // für die Ausschluss-Regel: wer Brutto gewinnt, kann in der zugehörigen Netto-Klasse nicht auch Sieger sein.
@@ -1175,7 +1178,7 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
                   )}
                 </div>
                 <div style={{ textAlign: 'center', minWidth: 30 }}>
-                  <div style={{ fontSize: 15, color: C.muted }}>{r.thru}</div>
+                  <div style={{ fontSize: 15, color: C.muted }}>{thruTextFor(r.thru)}</div>
                 </div>
               </div>
             </div>
