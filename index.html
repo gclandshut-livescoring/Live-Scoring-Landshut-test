@@ -205,7 +205,9 @@ function App() {
       const params = new URLSearchParams(window.location.search);
       const token = params.get('m');
       if (params.get('admin') === '1') {
-        setPhase('adminGate');
+        // Admin-Anmeldung im Browser merken, damit man beim Hin- und Herspringen zwischen
+        // Live-Ansicht und Admin nicht jedes Mal die PIN neu eingeben muss.
+        setPhase(localStorage.getItem('ls_admin_auth') === '1' ? 'admin' : 'adminGate');
         return;
       }
       if (token) {
@@ -243,7 +245,7 @@ function App() {
   if (phase === 'solo') {
     return <SoloEntry tournament={tournament} flightId={soloFlightId} reload={load} />;
   }
-  return <PublicLeaderboard tournament={tournament} err={err} />;
+  return <PublicLeaderboard tournament={tournament} err={err} publicOnly={new URLSearchParams(window.location.search).get('public') === '1'} />;
 }
 
 // ============================================================
@@ -256,7 +258,7 @@ function AdminGate({ tournament, onAuthed, onBack }) {
 
   const submit = async () => {
     if (!pinSet) { onAuthed(); return; }
-    if (pin === tournament.meta.adminPin) { onAuthed(); }
+    if (pin === tournament.meta.adminPin) { localStorage.setItem('ls_admin_auth', '1'); onAuthed(); }
     else setError('Falsche PIN.');
   };
 
@@ -393,8 +395,9 @@ function TournamentSetup({ tournament, reload }) {
   const toggleClassRound = (cls, roundId) => {
     setClassConfig(prev => {
       const cur = prev[cls] || { rounds: [], tee: 'Weiß' };
-      const has = cur.rounds.includes(roundId);
-      const nextRounds = has ? cur.rounds.filter(id => id !== roundId) : [...cur.rounds, roundId].sort((a, b) => a - b);
+      const curRounds = cur.rounds || [];
+      const has = curRounds.includes(roundId);
+      const nextRounds = has ? curRounds.filter(id => id !== roundId) : [...curRounds, roundId].sort((a, b) => a - b);
       return { ...prev, [cls]: { ...cur, rounds: nextRounds } };
     });
   };
@@ -800,6 +803,14 @@ function FlightAdmin({ tournament, reload }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20 }}>
+        <div style={{ fontSize: 13, color: C.inkDim, marginBottom: 6 }}>Zuschauer-Link (nur Live-Ergebnisse, keine Eingabe)</div>
+        <div style={{ fontSize: 12, color: C.inkDim, wordBreak: 'break-all', background: C.board, padding: '8px 10px', borderRadius: 6 }}>
+          {baseUrl}?public=1
+        </div>
+        <div style={{ fontSize: 11, color: C.muted, marginTop: 6 }}>Diesen Link könnt ihr frei verteilen (Website, WhatsApp, Aushang) – er zeigt nur die Rangliste, ohne Admin-Zugang oder Eingabemöglichkeit.</div>
+      </div>
+
+      <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20 }}>
         <div style={{ fontSize: 13, color: C.inkDim, marginBottom: 10 }}>Neuen Flight anlegen</div>
         <input placeholder="Flight-Name (z. B. Flight 1)" value={name} onChange={e => setName(e.target.value)} style={{ ...inputStyle, marginBottom: 10 }} />
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
@@ -859,7 +870,7 @@ const badgeStyle = { background: C.accentTint, color: C.accent, fontSize: 12, pa
 // ============================================================
 // PUBLIC LEADERBOARD
 // ============================================================
-function PublicLeaderboard({ tournament, err }) {
+function PublicLeaderboard({ tournament, err, publicOnly }) {
   if (err) return <div className="wrap" style={{ textAlign: 'center', color: C.red, paddingTop: '20vh' }}>{err}</div>;
   if (!tournament || !tournament.meta) {
     return (
@@ -886,7 +897,7 @@ function PublicLeaderboard({ tournament, err }) {
     ? [...m.fixedClasses, ...(showNettoCM ? [NETTO_CM_ID] : [])]
     : [...bruttoClasses.map(c => c.id), ...hcpClassesWithPrize.map(c => c.id)];
   const [activeClass, setActiveClass] = useState(classIds[0]);
-  const [activeRound, setActiveRound] = useState((m.rounds && m.rounds[m.rounds.length - 1].id) || 1);
+  const [activeRound, setActiveRound] = useState(null);
   const [detailPlayer, setDetailPlayer] = useState(null);
 
   useEffect(() => { if (!classIds.includes(activeClass)) setActiveClass(classIds[0]); }, [m.classificationMode]);
@@ -916,6 +927,25 @@ function PublicLeaderboard({ tournament, err }) {
     if (fallbackFid !== null) return (scores[fallbackFid] && scores[fallbackFid][roundId] && scores[fallbackFid][roundId][playerId]) || {};
     return {};
   };
+
+  // Ermittelt die Runde, die gerade gespielt wird: die erste, die noch nicht von allen Spielern
+  // vollständig eingetragen ist. Sind alle Runden fertig, bleibt die letzte stehen.
+  const currentRoundId = (() => {
+    const rounds = m.rounds || [];
+    if (!rounds.length) return 1;
+    const playerIds = Object.keys(players);
+    if (!playerIds.length) return rounds[0].id;
+    for (const r of rounds) {
+      const allDone = playerIds.every(pid => Object.values(findPlayerRoundScores(pid, r.id)).filter(isEntered).length >= m.holes);
+      if (!allDone) return r.id;
+    }
+    return rounds[rounds.length - 1].id;
+  })();
+
+  useEffect(() => {
+    if (activeRound === null) setActiveRound(currentRoundId);
+  }, [currentRoundId]);
+  const effectiveRound = activeRound === null ? currentRoundId : activeRound;
 
   // Summiert Schläge UND das Par der tatsächlich gespielten Löcher über alle Runden,
   // damit wir "brutto/netto relativ zum Par" korrekt anzeigen können (wie bei Turnier-Leaderboards üblich).
@@ -963,7 +993,7 @@ function PublicLeaderboard({ tournament, err }) {
   };
 
   const rows = Object.entries(players).map(([id, p]) => {
-    const thruScores = findPlayerRoundScores(id, activeRound);
+    const thruScores = findPlayerRoundScores(id, effectiveRound);
     // Bei fester Klassifizierung zählt für Brutto nur die Rundenauswahl der eigenen Klasse
     // (z. B. Herren 3 Runden, Damen 2 Runden).
     const playerClass = (p.classes && p.classes[0]) || null;
@@ -1050,7 +1080,7 @@ function PublicLeaderboard({ tournament, err }) {
 
   return (
     <div className="wrap" style={{ maxWidth: 620 }}>
-      {myFlightToken && (
+      {myFlightToken && !publicOnly && (
         <a href={`?m=${myFlightToken}`} style={{
           display: 'block', textAlign: 'center', padding: '13px 0', marginBottom: 12,
           background: C.ink, color: '#fff', borderRadius: 10, fontSize: 15, fontWeight: 600, textDecoration: 'none'
@@ -1077,7 +1107,7 @@ function PublicLeaderboard({ tournament, err }) {
           <div style={{ display: 'flex', gap: 6, padding: '10px 16px', borderBottom: `1px solid ${C.line}`, overflowX: 'auto' }}>
             {m.rounds.map(r => (
               <button key={r.id} onClick={() => setActiveRound(r.id)}
-                style={{ flexShrink: 0, fontSize: 12, padding: '5px 12px', borderRadius: 6, border: `1px solid ${activeRound === r.id ? C.ink : C.line}`, background: activeRound === r.id ? C.ink : '#fff', color: activeRound === r.id ? '#fff' : C.ink, cursor: 'pointer' }}>
+                style={{ flexShrink: 0, fontSize: 12, padding: '5px 12px', borderRadius: 6, border: `1px solid ${effectiveRound === r.id ? C.ink : C.line}`, background: effectiveRound === r.id ? C.ink : '#fff', color: effectiveRound === r.id ? '#fff' : C.ink, cursor: 'pointer' }}>
                 {r.label}
               </button>
             ))}
@@ -1152,10 +1182,16 @@ function PublicLeaderboard({ tournament, err }) {
         <ScoreDetailModal
           tournament={tournament}
           playerId={detailPlayer}
-          initialRound={activeRound}
+          initialRound={effectiveRound}
           findPlayerRoundScores={findPlayerRoundScores}
           onClose={() => setDetailPlayer(null)}
         />
+      )}
+
+      {!publicOnly && (
+        <div style={{ textAlign: 'center', marginTop: 16, paddingBottom: 8 }}>
+          <a href="?admin=1" style={{ fontSize: 12, color: C.muted, textDecoration: 'none' }}>Admin-Bereich</a>
+        </div>
       )}
     </div>
   );
