@@ -705,6 +705,7 @@ function PlayerAdmin({ tournament, reload }) {
   const [cls, setCls] = useState(meta.classificationMode === 'fixed' ? FIXED_CLASSES[0] : '');
   const [geschlecht, setGeschlecht] = useState('m');
   const [geburtsjahr, setGeburtsjahr] = useState('');
+  const [nettoCM, setNettoCM] = useState(false);
   const fileRef = useRef(null);
   const [editingId, setEditingId] = useState(null);
   const [editDraft, setEditDraft] = useState(null);
@@ -730,9 +731,9 @@ function PlayerAdmin({ tournament, reload }) {
       const existing = await lookupMember(name);
       if (existing && existing.geburtsjahr) geb = existing.geburtsjahr;
     }
-    await fbPatch('tournament/players/' + id, { name, hcp: Number(hcp), classes: cls ? [cls] : [], geschlecht, geburtsjahr: geb || null, tee: teeForGeschlecht(geschlecht, cls) });
+    await fbPatch('tournament/players/' + id, { name, hcp: Number(hcp), classes: cls ? [cls] : [], geschlecht, geburtsjahr: geb || null, nettoCM, tee: teeForGeschlecht(geschlecht, cls) });
     if (geb) await upsertMember(name, geb, geschlecht);
-    setName(''); setHcp(''); setGeburtsjahr('');
+    setName(''); setHcp(''); setGeburtsjahr(''); setNettoCM(false);
     await reload();
   };
 
@@ -741,11 +742,12 @@ function PlayerAdmin({ tournament, reload }) {
     await reload();
   };
 
-  // Spieler bearbeiten (Name, Hcp, Klasse, Geschlecht, Geburtsjahr) statt löschen + neu anlegen zu
-  // müssen – wichtig, wenn ein Turnier schon läuft und nur eine Falschangabe korrigiert werden muss.
+  // Spieler bearbeiten (Name, Hcp, Klasse, Geschlecht, Geburtsjahr, Netto-CM-Anmeldung) statt
+  // löschen + neu anlegen zu müssen – wichtig, wenn ein Turnier schon läuft und nur eine
+  // Falschangabe korrigiert werden muss.
   const startEdit = (id, p) => {
     setEditingId(id);
-    setEditDraft({ name: p.name, hcp: String(p.hcp), cls: (p.classes && p.classes[0]) || (meta.classificationMode === 'fixed' ? FIXED_CLASSES[0] : ''), geschlecht: p.geschlecht || 'm', geburtsjahr: p.geburtsjahr || '' });
+    setEditDraft({ name: p.name, hcp: String(p.hcp), cls: (p.classes && p.classes[0]) || (meta.classificationMode === 'fixed' ? FIXED_CLASSES[0] : ''), geschlecht: p.geschlecht || 'm', geburtsjahr: p.geburtsjahr || '', nettoCM: !!p.nettoCM });
   };
   const cancelEdit = () => { setEditingId(null); setEditDraft(null); };
   const saveEdit = async (id) => {
@@ -756,6 +758,7 @@ function PlayerAdmin({ tournament, reload }) {
       classes: editDraft.cls ? [editDraft.cls] : [],
       geschlecht: editDraft.geschlecht,
       geburtsjahr: editDraft.geburtsjahr || null,
+      nettoCM: editDraft.nettoCM,
       tee: teeForGeschlecht(editDraft.geschlecht, editDraft.cls),
     });
     if (editDraft.geburtsjahr) await upsertMember(editDraft.name, editDraft.geburtsjahr, editDraft.geschlecht);
@@ -821,6 +824,12 @@ function PlayerAdmin({ tournament, reload }) {
         const pcls = isFixed ? parts[idx++] : undefined;
         const pg = (parts[idx] === 'w' || parts[idx] === 'm') ? parts[idx++] : 'm';
         let pgeb = (parts[idx] && /^\d{4}$/.test(parts[idx])) ? parts[idx++] : null;
+        let pNettoCM = false;
+        const nettoCMToken = (parts[idx] || '').toLowerCase();
+        if (['ja', 'j', '1', 'true', 'nein', 'n', '0', 'false'].includes(nettoCMToken)) {
+          pNettoCM = ['ja', 'j', '1', 'true'].includes(nettoCMToken);
+          idx++;
+        }
         const pflight = parts[idx];
         if (!pname || phcp === undefined) return;
         if (!pgeb) {
@@ -828,7 +837,7 @@ function PlayerAdmin({ tournament, reload }) {
           if (rec && rec.geburtsjahr) pgeb = rec.geburtsjahr;
         }
         const id = newId();
-        playerUpdates[id] = { name: pname, hcp: Number(phcp), classes: pcls ? [pcls] : [], geschlecht: pg, geburtsjahr: pgeb, tee: teeForGeschlecht(pg, pcls) };
+        playerUpdates[id] = { name: pname, hcp: Number(phcp), classes: pcls ? [pcls] : [], geschlecht: pg, geburtsjahr: pgeb, nettoCM: pNettoCM, tee: teeForGeschlecht(pg, pcls) };
         if (pgeb) memberUpserts[memberKey(pname)] = { name: pname, geburtsjahr: pgeb, geschlecht: pg };
         if (pflight) {
           if (!flightGroups[pflight]) flightGroups[pflight] = [];
@@ -860,8 +869,8 @@ function PlayerAdmin({ tournament, reload }) {
       <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
           <span style={{ fontSize: 13, color: C.inkDim }}>
-            CSV hochladen: name,handicap{meta.classificationMode === 'fixed' ? ',klasse' : ''},geschlecht,geburtsjahr,flight
-            <br /><span style={{ fontSize: 11 }}>geschlecht = m/w (optional, Standard m). geburtsjahr optional, aber wichtig für die automatische AK-Mehrfachwertung (z.B. 1960) – einmal erfasste Geburtsjahre werden für zukünftige Uploads automatisch anhand des Namens gemerkt, falls sie in einer neuen Datei fehlen. Flight-Spalte optional – gleicher Flight-Name gruppiert automatisch, Link + Passwort werden erzeugt.</span>
+            CSV hochladen: name,handicap{meta.classificationMode === 'fixed' ? ',klasse' : ''},geschlecht,geburtsjahr,nettocm,flight
+            <br /><span style={{ fontSize: 11 }}>geschlecht = m/w (optional, Standard m). geburtsjahr optional, aber wichtig für die automatische AK-Mehrfachwertung (z.B. 1960) – einmal erfasste Geburtsjahre werden für zukünftige Uploads automatisch anhand des Namens gemerkt, falls sie in einer neuen Datei fehlen. nettocm = ja/nein (optional, Standard nein) – Anmeldung zur separaten Netto-Klubmeisterschaft. Flight-Spalte optional – gleicher Flight-Name gruppiert automatisch, Link + Passwort werden erzeugt.</span>
           </span>
           <button onClick={() => fileRef.current.click()} style={smallBtn}>Datei wählen</button>
           <input ref={fileRef} type="file" accept=".csv,text/csv" onChange={handleFile} style={{ display: 'none' }} />
@@ -883,6 +892,12 @@ function PlayerAdmin({ tournament, reload }) {
             <option value="w">Dame</option>
           </select>
           <input placeholder="Geburtsjahr" type="number" value={geburtsjahr} onChange={e => setGeburtsjahr(e.target.value)} style={{ ...inputStyle, width: 110 }} />
+          {meta.type === 'clubmeisterschaft' && (
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: C.inkDim, background: C.board, padding: '0 10px', borderRadius: 6 }}>
+              <input type="checkbox" checked={nettoCM} onChange={e => setNettoCM(e.target.checked)} />
+              Netto-Klubmeisterschaft
+            </label>
+          )}
           <button onClick={addPlayer} style={smallBtn}>+ Hinzufügen</button>
         </div>
       </div>
@@ -918,6 +933,12 @@ function PlayerAdmin({ tournament, reload }) {
                   <option value="w">Dame</option>
                 </select>
                 <input placeholder="Geburtsjahr" type="number" value={editDraft.geburtsjahr} onChange={e => setEditDraft(d => ({ ...d, geburtsjahr: e.target.value }))} style={{ ...inputStyle, width: 110 }} />
+                {meta.type === 'clubmeisterschaft' && (
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: C.inkDim, background: C.card, padding: '0 10px', borderRadius: 6 }}>
+                    <input type="checkbox" checked={editDraft.nettoCM} onChange={e => setEditDraft(d => ({ ...d, nettoCM: e.target.checked }))} />
+                    Netto-Klubmeisterschaft
+                  </label>
+                )}
               </div>
               <div style={{ display: 'flex', gap: 8 }}>
                 <button onClick={() => saveEdit(id)} style={smallBtn}>Speichern</button>
@@ -931,6 +952,7 @@ function PlayerAdmin({ tournament, reload }) {
                 <span style={{ fontSize: 12, color: C.muted, marginLeft: 8 }}>
                   Hcp {p.hcp} · {p.geschlecht === 'w' ? 'Dame' : 'Herr'}{p.geburtsjahr ? ` · *${p.geburtsjahr}` : ''} · Tee {p.tee || teeForGeschlecht(p.geschlecht, p.classes && p.classes[0])}
                   {meta.classificationMode === 'fixed' ? ` · ${effectiveClassesFor(p).join(', ') || '–'}` : (p.classes && p.classes.length ? '· ' + p.classes.join(', ') : '')}
+                  {p.nettoCM ? ' · Netto-CM' : ''}
                 </span>
               </div>
               <div style={{ display: 'flex', gap: 6 }}>
@@ -1013,6 +1035,8 @@ function FlightAdmin({ tournament, reload }) {
   };
 
   const baseUrl = window.location.origin + window.location.pathname;
+  // Alphabetisch sortierte Spielerliste für die Auswahl-Buttons (leichter zu finden bei vielen Spielern).
+  const sortedPlayers = Object.entries(players).sort((a, b) => (a[1].name || '').localeCompare(b[1].name || ''));
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -1028,7 +1052,7 @@ function FlightAdmin({ tournament, reload }) {
         <div style={{ fontSize: 13, color: C.inkDim, marginBottom: 10 }}>Neuen Flight anlegen</div>
         <input placeholder="Flight-Name (z. B. Flight 1)" value={name} onChange={e => setName(e.target.value)} style={{ ...inputStyle, marginBottom: 10 }} />
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
-          {Object.entries(players).map(([id, p]) => {
+          {sortedPlayers.map(([id, p]) => {
             const taken = assignedElsewhere(id);
             return (
               <button key={id} onClick={() => !taken && toggle(id)} disabled={taken} title={taken ? `Bereits in ${whichFlight(id)}` : ''}
@@ -1065,7 +1089,7 @@ function FlightAdmin({ tournament, reload }) {
             <div key={id} style={{ background: C.card, border: `1px solid ${C.ink}`, borderRadius: 12, padding: 16 }}>
               <input value={editName} onChange={e => setEditName(e.target.value)} style={{ ...inputStyle, marginBottom: 10 }} />
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
-                {Object.entries(players).map(([pid, p]) => {
+                {sortedPlayers.map(([pid, p]) => {
                   const taken = assignedElsewhere(pid) && !editSelected.includes(pid);
                   return (
                     <button key={pid} onClick={() => !taken && toggleEditPlayer(pid)} disabled={taken} title={taken ? `Bereits in ${whichFlight(pid)}` : ''}
@@ -1169,6 +1193,25 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
   const [detailPlayer, setDetailPlayer] = useState(null);
 
   useEffect(() => { if (!classIds.includes(activeClass)) setActiveClass(classIds[0]); }, [m.classificationMode]);
+
+  // Zuschaueransicht: Klassen automatisch nacheinander durchschalten (wie beim Ryder-Cup-Tool) –
+  // scrollt dabei langsam nach unten, um alle Plätze zu zeigen, bevor zur nächsten Klasse gewechselt
+  // wird. Ein manueller Klick auf eine Klasse funktioniert jederzeit und setzt die Rotation von dort fort.
+  const AUTO_DWELL_MS = 9000;
+  useEffect(() => {
+    if (!publicOnly || classIds.length <= 1) return;
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    const scrollTimer = setTimeout(() => {
+      window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+    }, Math.max(1000, AUTO_DWELL_MS - 3000));
+    const advanceTimer = setTimeout(() => {
+      setActiveClass(prev => {
+        const idx = classIds.indexOf(prev);
+        return classIds[(idx + 1) % classIds.length];
+      });
+    }, AUTO_DWELL_MS);
+    return () => { clearTimeout(scrollTimer); clearTimeout(advanceTimer); };
+  }, [activeClass, publicOnly, classIds.join(',')]);
 
   // Erkennt, ob dieses Gerät bereits bei einem Flight für die Score-Eingabe angemeldet war,
   // damit der Zurück-Button auf die richtige Scorekarte verlinkt.
@@ -1280,7 +1323,10 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
     // gewählten Haupt-Scoring-Modus des Turniers (Zählspiel für die Brutto-Klassen) – ebenfalls
     // nur über die Runden der eigenen Klasse, damit Herren (3 Runden) und Damen (2 Runden) fair
     // anhand ihrer jeweiligen Baseline verglichen werden.
-    const cmNettoRaw = showNettoCM ? stablefordTotalsAcrossRounds(id, p.hcp, p.tee, classRounds).netPts : null;
+    // Netto-Klubmeisterschaft ist eine eigenständige Anmeldung (wie Herren eine eigene
+    // Wertungsklasse) – nur Spieler mit explizitem Opt-in (p.nettoCM) zählen mit, nicht automatisch
+    // jeder, der irgendwo einen Score einträgt.
+    const cmNettoRaw = (showNettoCM && p.nettoCM) ? stablefordTotalsAcrossRounds(id, p.hcp, p.tee, classRounds).netPts : null;
     const cmNettoBaselineRow = classRounds.length * m.holes * 2;
     const cmNettoDiff = cmNettoRaw === null ? null : cmNettoRaw - cmNettoBaselineRow;
     if (isStableford) {
