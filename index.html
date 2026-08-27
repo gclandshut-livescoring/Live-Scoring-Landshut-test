@@ -132,7 +132,13 @@ function classTeeForPlayer(meta, cls, geschlecht) {
 // JEDE Frau zählt immer automatisch in "Damen" mit, unabhängig von der registrierten Klasse
 // (gemeinsames Tee Rot bei allen Frauen) – plus alle AK-Damen-Klassen, für die ihr Alter reicht.
 // "Jugend" wird zusätzlich IMMER automatisch anhand des Geburtsjahrs ergänzt (unter 18).
+// Netto-Klubmeisterschaft-Teilnehmer (nettoCM) sind eine Alternative, keine Zusatzwertung – sie
+// erscheinen in KEINER der übrigen Klassen (Herren/Damen/AK/Jugend), egal welches Alter/Geschlecht.
 function effectiveClassesFor(p) {
+  // Netto-Klubmeisterschaft-Teilnehmer zählen ausschließlich dort – unabhängig von Alter oder
+  // Geschlecht nicht zusätzlich in Herren/Damen/AK/Jugend gelistet (Alternative, keine Zusatzwertung).
+  if (p.nettoCM) return [];
+
   const base = p.classes && p.classes[0];
   const isWoman = p.geschlecht === 'w';
   const age = p.geburtsjahr ? TOURNAMENT_YEAR - Number(p.geburtsjahr) : null;
