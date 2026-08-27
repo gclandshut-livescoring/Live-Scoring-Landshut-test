@@ -989,6 +989,47 @@ function PlayerAdmin({ tournament, reload }) {
 // Teilen-Buttons pro Flight: direkt in WhatsApp öffnen (Link + Passwort vorausgefüllt) oder als
 // Text in die Zwischenablage kopieren, um es in eine bestehende WhatsApp-Gruppe/den Flight-Chat
 // einzufügen, statt Link und Passwort manuell abzutippen.
+// Berechnet die aktuelle Brutto-Rangliste einer Klasse direkt aus den Turnierdaten – genutzt für die
+// automatische Flight-Neubildung "nach aktueller Rangliste" (z. B. Sonntag nach Samstag-Ergebnis).
+function computeClassRanking(tournament, classId) {
+  const m = tournament.meta;
+  const players = tournament.players || {};
+  const flights = tournament.flights || {};
+  const scores = tournament.scores || {};
+
+  const findPlayerRoundScores = (playerId, roundId) => {
+    let fallbackFid = null;
+    for (const fid of Object.keys(flights)) {
+      const f = flights[fid];
+      if (!(f.playerIds || []).includes(playerId)) continue;
+      if (f.rounds && f.rounds.length) {
+        if (f.rounds.includes(roundId)) return (scores[fid] && scores[fid][roundId] && scores[fid][roundId][playerId]) || {};
+      } else if (fallbackFid === null) fallbackFid = fid;
+    }
+    if (fallbackFid !== null) return (scores[fallbackFid] && scores[fallbackFid][roundId] && scores[fallbackFid][roundId][playerId]) || {};
+    return {};
+  };
+
+  const rows = Object.entries(players).map(([id, p]) => {
+    const playerClass = (p.classes && p.classes[0]) || null;
+    const classRounds = m.classificationMode === 'fixed' && playerClass ? classRoundsFor(m, playerClass) : (m.rounds || []);
+    let gross = 0, par = 0, any = false;
+    classRounds.forEach(r => {
+      const s = findPlayerRoundScores(id, r.id);
+      Object.entries(s).forEach(([hi, val]) => {
+        if (!isNumericScore(val)) return;
+        gross += Number(val);
+        par += courseFor(m.holes).pars[Number(hi)] || 0;
+        any = true;
+      });
+    });
+    const effClasses = m.classificationMode === 'fixed' ? effectiveClassesFor(p) : (p.classes || []);
+    return { id, grossToPar: any ? gross - par : null, effClasses };
+  });
+
+  return rows.filter(r => r.effClasses.includes(classId) && r.grossToPar !== null).sort((a, b) => a.grossToPar - b.grossToPar);
+}
+
 function FlightShareButtons({ flightName, link, password }) {
   const [copied, setCopied] = useState(false);
   const message = `Live-Scoring ${flightName}:\n${link}\nPasswort: ${password}`;
@@ -1081,8 +1122,116 @@ function FlightAdmin({ tournament, reload }) {
   // Alphabetisch sortierte Spielerliste für die Auswahl-Buttons (leichter zu finden bei vielen Spielern).
   const sortedPlayers = Object.entries(players).sort((a, b) => (a[1].name || '').localeCompare(b[1].name || ''));
 
+  // Automatische Flight-Bildung (optional) – Kandidaten sind alle noch nicht zugeteilten Spieler,
+  // entweder nach Handicap sortiert (z. B. Samstag-Start) oder nach der aktuellen Rangliste einer
+  // Klasse (z. B. Sonntag-Neusortierung nach dem Samstag-Ergebnis). Manuelle Anlage bleibt unverändert
+  // zusätzlich verfügbar.
+  const [showAutoBuilder, setShowAutoBuilder] = useState(false);
+  const [autoMode, setAutoMode] = useState('handicap');
+  const [autoClassId, setAutoClassId] = useState('');
+  const [autoFlightSize, setAutoFlightSize] = useState(3);
+  const [autoNamePrefix, setAutoNamePrefix] = useState('Flight');
+  const [autoRounds, setAutoRounds] = useState(allRounds.map(r => r.id));
+  const toggleAutoRound = (rid) => setAutoRounds(sel => sel.includes(rid) ? sel.filter(x => x !== rid) : [...sel, rid]);
+
+  const availableClassIds = meta.classificationMode === 'fixed'
+    ? expandFixedClassIds(FIXED_CLASSES)
+    : [...(meta.bruttoClasses || [{ id: 'Brutto' }]).map(c => c.id), ...(meta.hcpClasses || []).map(c => c.id)];
+
+  const unassignedPlayers = Object.entries(players).filter(([id]) => !assignedElsewhere(id)).map(([id, p]) => ({ id, ...p }));
+
+  const buildAutoFlights = async () => {
+    let candidates = unassignedPlayers;
+    if (autoMode === 'ranking' && autoClassId) {
+      const ranking = computeClassRanking(tournament, autoClassId);
+      const rankedIds = ranking.map(r => r.id);
+      candidates = candidates.filter(p => rankedIds.includes(p.id)).sort((a, b) => rankedIds.indexOf(a.id) - rankedIds.indexOf(b.id));
+    } else {
+      if (autoClassId) {
+        candidates = candidates.filter(p => meta.classificationMode === 'fixed' ? effectiveClassesFor(p).includes(autoClassId) : (p.classes || []).includes(autoClassId));
+      }
+      candidates = [...candidates].sort((a, b) => a.hcp - b.hcp);
+    }
+    if (candidates.length === 0 || autoRounds.length === 0) return;
+
+    const flightUpdates = {};
+    for (let i = 0; i < candidates.length; i += autoFlightSize) {
+      const group = candidates.slice(i, i + autoFlightSize);
+      const fid = newId();
+      flightUpdates[fid] = {
+        name: `${autoNamePrefix} ${Math.floor(i / autoFlightSize) + 1}`,
+        playerIds: group.map(p => p.id),
+        rounds: autoRounds,
+        token: genToken(),
+        password: genPassword(),
+      };
+    }
+    await fbPatch('tournament/flights', flightUpdates);
+    setShowAutoBuilder(false);
+    await reload();
+  };
+
+  // Vorschau-Kandidatenliste: dieselbe Logik wie beim tatsächlichen Erstellen, nur zur Anzeige.
+  let autoCandidates = unassignedPlayers;
+  if (autoMode === 'ranking' && autoClassId) {
+    const rankedIds = computeClassRanking(tournament, autoClassId).map(r => r.id);
+    autoCandidates = autoCandidates.filter(p => rankedIds.includes(p.id));
+  } else if (autoClassId) {
+    autoCandidates = autoCandidates.filter(p => meta.classificationMode === 'fixed' ? effectiveClassesFor(p).includes(autoClassId) : (p.classes || []).includes(autoClassId));
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ background: C.accentTint, border: `1px solid ${C.accent}`, borderRadius: 12, padding: 20 }}>
+        {!showAutoBuilder ? (
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
+            <div>
+              <div style={{ fontSize: 14, fontWeight: 600, color: C.accent }}>🎯 Flights automatisch bilden?</div>
+              <div style={{ fontSize: 12, color: C.inkDim, marginTop: 2 }}>Nach Handicap sortieren (z. B. Samstag) oder nach aktueller Rangliste neu mischen (z. B. Sonntag) – geht auch weiterhin ganz manuell weiter unten.</div>
+            </div>
+            <button onClick={() => setShowAutoBuilder(true)} style={{ ...smallBtn, background: C.accent, color: '#fff', border: 'none' }}>Automatisch erstellen</button>
+          </div>
+        ) : (
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 600, color: C.accent, marginBottom: 10 }}>🎯 Flights automatisch bilden</div>
+            <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+              <button onClick={() => setAutoMode('handicap')} style={{ ...smallBtn, background: autoMode === 'handicap' ? C.ink : '#fff', color: autoMode === 'handicap' ? '#fff' : C.ink }}>Nach Handicap</button>
+              <button onClick={() => setAutoMode('ranking')} style={{ ...smallBtn, background: autoMode === 'ranking' ? C.ink : '#fff', color: autoMode === 'ranking' ? '#fff' : C.ink }}>Nach aktueller Rangliste</button>
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+              <select value={autoClassId} onChange={e => setAutoClassId(e.target.value)} style={{ ...inputStyle, width: 170 }}>
+                <option value="">{autoMode === 'ranking' ? 'Klasse wählen…' : 'Alle Klassen'}</option>
+                {availableClassIds.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ fontSize: 12, color: C.inkDim }}>Spieler pro Flight</span>
+                <input type="number" min="2" max="6" value={autoFlightSize} onChange={e => setAutoFlightSize(Number(e.target.value) || 3)} style={{ ...inputStyle, width: 60 }} />
+              </div>
+              <input placeholder="Namens-Präfix" value={autoNamePrefix} onChange={e => setAutoNamePrefix(e.target.value)} style={{ ...inputStyle, width: 130 }} />
+            </div>
+            {allRounds.length > 1 && (
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+                {allRounds.map(r => (
+                  <label key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, color: C.inkDim, background: C.card, padding: '4px 10px', borderRadius: 6 }}>
+                    <input type="checkbox" checked={autoRounds.includes(r.id)} onChange={() => toggleAutoRound(r.id)} />
+                    {r.label}
+                  </label>
+                ))}
+              </div>
+            )}
+            <div style={{ fontSize: 12, color: C.inkDim, marginBottom: 10 }}>
+              {autoMode === 'ranking' && !autoClassId
+                ? 'Bitte eine Klasse wählen, damit die aktuelle Rangliste als Sortierung dient.'
+                : `${autoCandidates.length} Spieler werden automatisch in ${Math.max(1, Math.ceil(autoCandidates.length / autoFlightSize))} Flights aufgeteilt.`}
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button onClick={buildAutoFlights} disabled={autoMode === 'ranking' && !autoClassId} style={{ ...smallBtn, background: C.accent, color: '#fff', border: 'none', opacity: (autoMode === 'ranking' && !autoClassId) ? 0.5 : 1 }}>Flights jetzt erstellen</button>
+              <button onClick={() => setShowAutoBuilder(false)} style={{ ...smallBtn, color: C.muted }}>Abbrechen</button>
+            </div>
+          </div>
+        )}
+      </div>
+
       <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20 }}>
         <div style={{ fontSize: 13, color: C.inkDim, marginBottom: 6 }}>Zuschauer-Link (nur Live-Ergebnisse, keine Eingabe)</div>
         <div style={{ fontSize: 12, color: C.inkDim, wordBreak: 'break-all', background: C.board, padding: '8px 10px', borderRadius: 6 }}>
