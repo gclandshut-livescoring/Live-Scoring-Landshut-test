@@ -115,14 +115,13 @@ const AK_MIN_AGE = { AK30: 30, AK50: 50, AK65: 65 };
 const JUGEND_MAX_AGE = 18; // unter 18 automatisch Jugend, unabhängig von der sonst registrierten Klasse
 const TOURNAMENT_YEAR = new Date().getFullYear();
 
-// Tee für AK-Klassen hängt vom Geschlecht ab, nicht von der Klasse selbst: Männer spielen Gelb,
-// Frauen spielen Rot (dasselbe Tee wie die Damen) – deshalb können sich AK-Klassen bei Frauen mit
-// Damen NICHT verbinden (andere Regel als bei Herren/AK, wo explizit nur AK-Klassen untereinander
-// stapeln, nicht mit Herren). Herren/Damen/Jugend behalten ihr festes, admin-konfiguriertes Tee.
+// Abschlag ist eine feste Regel, keine Einstellung: nur "Herren" spielt von Weiß. Alles andere
+// bei Männern (AK30/50/65, Jugend) spielt von Gelb, alles bei Frauen (Damen, AK, Jugend) von Rot –
+// unabhängig von der genauen Klasse. Betrifft nur die Anzeige, keine Berechnung (Par/Index sind für
+// alle Tees identisch).
 function classTeeForPlayer(meta, cls, geschlecht) {
-  if (AK_CLASSES.includes(cls)) return geschlecht === 'w' ? 'Rot' : 'Gelb';
-  const cfg = meta.classConfig && meta.classConfig[cls];
-  return (cfg && cfg.tee) || (geschlecht === 'w' ? 'Rot' : 'Weiß');
+  if (cls === 'Herren') return 'Weiß';
+  return geschlecht === 'w' ? 'Rot' : 'Gelb';
 }
 
 // Errechnet aus der registrierten Klasse + Geburtsjahr alle (nach Geschlecht getrennten) Tab-IDs,
@@ -609,11 +608,11 @@ function TournamentSetup({ tournament, reload }) {
       <Field label={type === 'clubmeisterschaft' ? 'Klassifizierung: Runden & Abschlag je Klasse' : 'Netto-Wertung: Handicap-Klassen'}>
         {classificationMode === 'fixed' ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            <div style={{ fontSize: 11, color: C.muted }}>AK30/AK50/AK65 richten sich automatisch nach Geschlecht: Männer spielen Gelb, Frauen spielen Rot (wie die Damen) – deshalb kein Tee-Auswahlfeld bei den AK-Klassen, und Frauen zählen dort automatisch je nach Geburtsjahr in mehreren AK-Klassen gleichzeitig mit.</div>
+            <div style={{ fontSize: 11, color: C.muted }}>Abschlag ist eine feste Regel, keine Einstellung: nur Herren spielt von Weiß. Alles andere bei Männern (AK30/50/65, Jugend) spielt von Gelb, alles bei Frauen von Rot – automatisch anhand von Geschlecht + Klasse, kein Auswahlfeld nötig.</div>
             {FIXED_CLASSES.map(cls => {
-              const cfg = classConfig[cls] || { rounds: [], tee: 'Weiß' };
+              const cfg = classConfig[cls] || { rounds: [] };
               const cfgRounds = cfg.rounds || [];
-              const isAk = AK_CLASSES.includes(cls);
+              const teeNote = cls === 'Herren' ? 'Weiß' : 'Gelb (Herren) / Rot (Damen)';
               return (
                 <div key={cls} style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', background: C.board, borderRadius: 8, padding: '8px 10px' }}>
                   <span style={{ fontSize: 13, fontWeight: 600, color: C.inkDim, width: 60 }}>{cls}</span>
@@ -625,20 +624,7 @@ function TournamentSetup({ tournament, reload }) {
                       </label>
                     ))}
                   </div>
-                  {isAk ? (
-                    <span style={{ fontSize: 11, color: C.muted, fontStyle: 'italic' }}>Tee: Gelb (Herren) / Rot (Damen) – automatisch</span>
-                  ) : (
-                    <select value={cfg.tee || 'Weiß'} onChange={e => setClassTeeVal(cls, e.target.value)} style={{ ...inputStyle, width: 130 }}>
-                      <optgroup label="Herren">
-                        <option value="Weiß">Weiß (CR 72.8)</option>
-                        <option value="Gelb">Gelb (CR 71.1)</option>
-                      </optgroup>
-                      <optgroup label="Damen">
-                        <option value="Blau">Blau (CR 74.5)</option>
-                        <option value="Rot">Rot (CR 72.4)</option>
-                      </optgroup>
-                    </select>
-                  )}
+                  <span style={{ fontSize: 11, color: C.muted, fontStyle: 'italic' }}>Tee: {teeNote}</span>
                 </div>
               );
             })}
