@@ -112,6 +112,7 @@ const TEE_IDS = TEES.map(t => t.id);
 // auch für AK50 und AK30. Herren/Damen sind davon ausgenommen (kein Alterskriterium, eigenes Tee).
 const AK_CLASSES = ['AK30', 'AK50', 'AK65'];
 const AK_MIN_AGE = { AK30: 30, AK50: 50, AK65: 65 };
+const JUGEND_MAX_AGE = 18; // unter 18 automatisch Jugend, unabhängig von der sonst registrierten Klasse
 const TOURNAMENT_YEAR = new Date().getFullYear();
 
 // Tee für AK-Klassen hängt vom Geschlecht ab, nicht von der Klasse selbst: Männer spielen Gelb,
@@ -124,28 +125,45 @@ function classTeeForPlayer(meta, cls, geschlecht) {
   return (cfg && cfg.tee) || (geschlecht === 'w' ? 'Rot' : 'Weiß');
 }
 
-// Errechnet aus der registrierten Klasse + Geburtsjahr alle Klassen, in denen ein Spieler tatsächlich
-// mitzählt. Männer: AK-Klassen stapeln sich untereinander (gemeinsames Tee Gelb), Herren bleibt
-// außen vor (eigenes Tee Weiß). Frauen: Damen UND AK-Klassen teilen sich alle dasselbe Tee (Rot),
-// deshalb zählt eine Frau automatisch in Damen + allen AK-Klassen, für die ihr Alter reicht.
+// Errechnet aus der registrierten Klasse + Geburtsjahr alle (nach Geschlecht getrennten) Tab-IDs,
+// in denen ein Spieler tatsächlich mitzählt. Die AK-Klassen selbst bleiben bei der Spieleranlage
+// geschlechtsneutral (einfach "AK30" wählen) – die Trennung in "AK30 Herren" / "AK30 Damen" passiert
+// erst hier, rein für die Anzeige/Rangliste. Männer stapeln sich innerhalb der Herren-AK-Klassen
+// (gemeinsames Tee Gelb), Frauen zusätzlich immer mit in "Damen" (gemeinsames Tee Rot). Herren
+// bleibt bewusst separat (kein automatisches Stapeln mit AK). "Jugend" wird zusätzlich IMMER
+// automatisch anhand des Geburtsjahrs ergänzt (unter 18), egal welche Klasse sonst registriert ist.
 function effectiveClassesFor(p) {
   const base = p.classes && p.classes[0];
-  if (!base) return [];
   const isWoman = p.geschlecht === 'w';
+  const genderWord = isWoman ? 'Damen' : 'Herren';
   const age = p.geburtsjahr ? TOURNAMENT_YEAR - Number(p.geburtsjahr) : null;
+  const result = new Set();
 
-  if (isWoman && (base === 'Damen' || AK_CLASSES.includes(base))) {
-    const result = new Set(['Damen', base]);
-    if (age !== null) AK_CLASSES.forEach(c => { if (age >= AK_MIN_AGE[c]) result.add(c); });
-    return [...result];
+  if (isWoman && base === 'Damen') {
+    result.add('Damen');
+    if (age !== null) AK_CLASSES.forEach(c => { if (age >= AK_MIN_AGE[c]) result.add(`${c} Damen`); });
+  } else if (AK_CLASSES.includes(base)) {
+    result.add(`${base} ${genderWord}`);
+    if (age !== null) AK_CLASSES.forEach(c => { if (age >= AK_MIN_AGE[c]) result.add(`${c} ${genderWord}`); });
+    if (isWoman) result.add('Damen'); // Frauen zählen zusätzlich immer bei Damen mit (gleiches Tee Rot)
+  } else if (base) {
+    result.add(base); // Herren oder manuell "Jugend": kein Stapeln.
   }
-  if (!isWoman && AK_CLASSES.includes(base)) {
-    const result = new Set([base]);
-    if (age !== null) AK_CLASSES.forEach(c => { if (age >= AK_MIN_AGE[c]) result.add(c); });
-    return [...result];
-  }
-  // Herren, Jugend: nur die registrierte Klasse, kein Stapeln.
-  return [base];
+
+  if (age !== null && age < JUGEND_MAX_AGE) result.add('Jugend');
+
+  return [...result];
+}
+
+// Erweitert die feste Klassenliste für die Tab-Anzeige: AK30/AK50/AK65 werden zu zwei getrennten
+// Tabs (Herren/Damen), alle anderen Klassen bleiben unverändert.
+function expandFixedClassIds(fixedClasses) {
+  const out = [];
+  (fixedClasses || []).forEach(c => {
+    if (AK_CLASSES.includes(c)) out.push(`${c} Herren`, `${c} Damen`);
+    else out.push(c);
+  });
+  return out;
 }
 
 const DEFAULT_PARS_18 = [4,4,5,5,4,3,5,3,4, 4,4,5,4,3,5,3,4,4]; // GC Landshut
@@ -870,7 +888,7 @@ function PlayerAdmin({ tournament, reload }) {
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
           <span style={{ fontSize: 13, color: C.inkDim }}>
             CSV hochladen: name,handicap{meta.classificationMode === 'fixed' ? ',klasse' : ''},geschlecht,geburtsjahr,nettocm,flight
-            <br /><span style={{ fontSize: 11 }}>geschlecht = m/w (optional, Standard m). geburtsjahr optional, aber wichtig für die automatische AK-Mehrfachwertung (z.B. 1960) – einmal erfasste Geburtsjahre werden für zukünftige Uploads automatisch anhand des Namens gemerkt, falls sie in einer neuen Datei fehlen. nettocm = ja/nein (optional, Standard nein) – Anmeldung zur separaten Netto-Klubmeisterschaft. Flight-Spalte optional – gleicher Flight-Name gruppiert automatisch, Link + Passwort werden erzeugt.</span>
+            <br /><span style={{ fontSize: 11 }}>geschlecht = m/w (optional, Standard m). geburtsjahr optional, aber wichtig für die automatische AK-Mehrfachwertung (z.B. 1960) – einmal erfasste Geburtsjahre werden für zukünftige Uploads automatisch anhand des Namens gemerkt, falls sie in einer neuen Datei fehlen. nettocm = ja/nein (optional, Standard nein) – Anmeldung zur separaten Netto-Clubmeisterschaft. Flight-Spalte optional – gleicher Flight-Name gruppiert automatisch, Link + Passwort werden erzeugt.</span>
           </span>
           <button onClick={() => fileRef.current.click()} style={smallBtn}>Datei wählen</button>
           <input ref={fileRef} type="file" accept=".csv,text/csv" onChange={handleFile} style={{ display: 'none' }} />
@@ -895,7 +913,7 @@ function PlayerAdmin({ tournament, reload }) {
           {meta.type === 'clubmeisterschaft' && (
             <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: C.inkDim, background: C.board, padding: '0 10px', borderRadius: 6 }}>
               <input type="checkbox" checked={nettoCM} onChange={e => setNettoCM(e.target.checked)} />
-              Netto-Klubmeisterschaft
+              Netto-Clubmeisterschaft
             </label>
           )}
           <button onClick={addPlayer} style={smallBtn}>+ Hinzufügen</button>
@@ -936,7 +954,7 @@ function PlayerAdmin({ tournament, reload }) {
                 {meta.type === 'clubmeisterschaft' && (
                   <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: C.inkDim, background: C.card, padding: '0 10px', borderRadius: 6 }}>
                     <input type="checkbox" checked={editDraft.nettoCM} onChange={e => setEditDraft(d => ({ ...d, nettoCM: e.target.checked }))} />
-                    Netto-Klubmeisterschaft
+                    Netto-Clubmeisterschaft
                   </label>
                 )}
               </div>
@@ -964,6 +982,31 @@ function PlayerAdmin({ tournament, reload }) {
         ))}
         {Object.keys(players).length === 0 && <div style={{ padding: 20, textAlign: 'center', color: C.muted, fontSize: 13 }}>Noch keine Spieler angelegt.</div>}
       </div>
+    </div>
+  );
+}
+
+// Teilen-Buttons pro Flight: direkt in WhatsApp öffnen (Link + Passwort vorausgefüllt) oder als
+// Text in die Zwischenablage kopieren, um es in eine bestehende WhatsApp-Gruppe/den Flight-Chat
+// einzufügen, statt Link und Passwort manuell abzutippen.
+function FlightShareButtons({ flightName, link, password }) {
+  const [copied, setCopied] = useState(false);
+  const message = `Live-Scoring ${flightName}:\n${link}\nPasswort: ${password}`;
+  const waHref = `https://wa.me/?text=${encodeURIComponent(message)}`;
+  const copyText = async () => {
+    try {
+      await navigator.clipboard.writeText(message);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (e) { /* Zwischenablage evtl. nicht erlaubt, kein harter Fehler */ }
+  };
+  return (
+    <div style={{ display: 'flex', gap: 6 }}>
+      <a href={waHref} target="_blank" rel="noopener noreferrer"
+        style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 12px', borderRadius: 6, border: `1px solid ${C.line}`, background: '#25D366', color: '#fff', fontSize: 12, fontWeight: 600, textDecoration: 'none' }}>
+        In WhatsApp öffnen
+      </a>
+      <button onClick={copyText} style={smallBtn}>{copied ? 'Kopiert ✓' : 'Kopieren'}</button>
     </div>
   );
 }
@@ -1137,7 +1180,8 @@ function FlightAdmin({ tournament, reload }) {
               <div style={{ fontSize: 12, color: C.inkDim, wordBreak: 'break-all', background: C.board, padding: '8px 10px', borderRadius: 6 }}>
                 {baseUrl}?m={f.token}
               </div>
-              <div style={{ fontSize: 12, color: C.inkDim, marginTop: 4 }}>Passwort: <b>{f.password}</b></div>
+              <div style={{ fontSize: 12, color: C.inkDim, marginTop: 4, marginBottom: 8 }}>Passwort: <b>{f.password}</b></div>
+              <FlightShareButtons flightName={f.name} link={`${baseUrl}?m=${f.token}`} password={f.password} />
             </div>
           )
         ))}
@@ -1186,7 +1230,7 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
   const showNettoCM = m.classificationMode === 'fixed' && m.type === 'clubmeisterschaft';
 
   const classIds = m.classificationMode === 'fixed'
-    ? [...m.fixedClasses, ...(showNettoCM ? [NETTO_CM_ID] : [])]
+    ? [...expandFixedClassIds(m.fixedClasses), ...(showNettoCM ? [NETTO_CM_ID] : [])]
     : [...bruttoClasses.map(c => c.id), ...hcpClassesWithPrize.map(c => c.id)];
   const [activeClass, setActiveClass] = useState(classIds[0]);
   const [activeRound, setActiveRound] = useState(null);
@@ -1195,22 +1239,39 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
   useEffect(() => { if (!classIds.includes(activeClass)) setActiveClass(classIds[0]); }, [m.classificationMode]);
 
   // Zuschaueransicht: Klassen automatisch nacheinander durchschalten (wie beim Ryder-Cup-Tool) –
-  // scrollt dabei langsam nach unten, um alle Plätze zu zeigen, bevor zur nächsten Klasse gewechselt
-  // wird. Ein manueller Klick auf eine Klasse funktioniert jederzeit und setzt die Rotation von dort fort.
-  const AUTO_DWELL_MS = 9000;
+  // scrollt dabei wirklich LANGSAM und gleichmäßig nach unten (eigene Animation statt Browser-
+  // "smooth", das oft zu schnell wirkt wie ein Sprung), bevor zur nächsten Klasse gewechselt wird.
+  // Ein manueller Klick auf eine Klasse funktioniert jederzeit und setzt die Rotation von dort fort.
+  const AUTO_DWELL_MS = 14000;
+  const AUTO_SCROLL_DURATION_MS = 9000;
+  const AUTO_SCROLL_START_DELAY_MS = 1500;
   useEffect(() => {
     if (!publicOnly || classIds.length <= 1) return;
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-    const scrollTimer = setTimeout(() => {
-      window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
-    }, Math.max(1000, AUTO_DWELL_MS - 3000));
+    let cancelled = false;
+    window.scrollTo({ top: 0, behavior: 'auto' });
+
+    const startDelay = setTimeout(() => {
+      if (cancelled) return;
+      const startY = window.scrollY;
+      const endY = Math.max(0, document.body.scrollHeight - window.innerHeight);
+      const startTime = performance.now();
+      const step = (now) => {
+        if (cancelled) return;
+        const progress = Math.min(1, (now - startTime) / AUTO_SCROLL_DURATION_MS);
+        window.scrollTo(0, startY + (endY - startY) * progress);
+        if (progress < 1) requestAnimationFrame(step);
+      };
+      requestAnimationFrame(step);
+    }, AUTO_SCROLL_START_DELAY_MS);
+
     const advanceTimer = setTimeout(() => {
       setActiveClass(prev => {
         const idx = classIds.indexOf(prev);
         return classIds[(idx + 1) % classIds.length];
       });
     }, AUTO_DWELL_MS);
-    return () => { clearTimeout(scrollTimer); clearTimeout(advanceTimer); };
+
+    return () => { cancelled = true; clearTimeout(startDelay); clearTimeout(advanceTimer); };
   }, [activeClass, publicOnly, classIds.join(',')]);
 
   // Erkennt, ob dieses Gerät bereits bei einem Flight für die Score-Eingabe angemeldet war,
@@ -1319,11 +1380,11 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
     const playerClass = (p.classes && p.classes[0]) || null;
     const classRounds = m.classificationMode === 'fixed' && playerClass ? classRoundsFor(m, playerClass) : (m.rounds || []);
     const effClasses = m.classificationMode === 'fixed' ? effectiveClassesFor(p) : (p.classes || []);
-    // Netto-Klubmeisterschaft läuft als eigenständige Stableford-Netto-Wertung, unabhängig vom
+    // Netto-Clubmeisterschaft läuft als eigenständige Stableford-Netto-Wertung, unabhängig vom
     // gewählten Haupt-Scoring-Modus des Turniers (Zählspiel für die Brutto-Klassen) – ebenfalls
     // nur über die Runden der eigenen Klasse, damit Herren (3 Runden) und Damen (2 Runden) fair
     // anhand ihrer jeweiligen Baseline verglichen werden.
-    // Netto-Klubmeisterschaft ist eine eigenständige Anmeldung (wie Herren eine eigene
+    // Netto-Clubmeisterschaft ist eine eigenständige Anmeldung (wie Herren eine eigene
     // Wertungsklasse) – nur Spieler mit explizitem Opt-in (p.nettoCM) zählen mit, nicht automatisch
     // jeder, der irgendwo einen Score einträgt.
     const cmNettoRaw = (showNettoCM && p.nettoCM) ? stablefordTotalsAcrossRounds(id, p.hcp, p.tee, classRounds).netPts : null;
@@ -1364,7 +1425,7 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
 
   let visibleRows;
   if (activeClass === NETTO_CM_ID) {
-    // Netto-Klubmeisterschaft: eine einzige kombinierte Wertung über alle Teilnehmer, unabhängig von Klasse.
+    // Netto-Clubmeisterschaft: eine einzige kombinierte Wertung über alle Teilnehmer, unabhängig von Klasse.
     visibleRows = rows.filter(r => r.cmNettoDiff !== null);
     visibleRows.sort((a, b) => (b.cmNettoDiff ?? -999) - (a.cmNettoDiff ?? -999));
   } else if (m.classificationMode === 'fixed') {
@@ -1448,7 +1509,7 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
         <div style={{ display: 'flex', gap: 6, padding: '12px 16px', borderBottom: `1px solid ${C.line}`, overflowX: 'auto' }}>
           {classIds.map(c => {
             const bc = bruttoClasses.find(x => x.id === c);
-            const label = c === NETTO_CM_ID ? 'Netto-Klubmeisterschaft' : (bc ? bc.label : (m.classificationMode === 'fixed' ? c : `Netto ${c}`));
+            const label = c === NETTO_CM_ID ? 'Netto-Clubmeisterschaft' : (bc ? bc.label : (m.classificationMode === 'fixed' ? c : `Netto ${c}`));
             return (
             <button key={c} onClick={() => setActiveClass(c)}
               style={{ flexShrink: 0, fontSize: 12, padding: '5px 12px', borderRadius: 6, border: `1px solid ${activeClass === c ? C.ink : C.line}`, background: activeClass === c ? C.ink : '#fff', color: activeClass === c ? '#fff' : C.ink, cursor: 'pointer' }}>
