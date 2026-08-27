@@ -129,25 +129,24 @@ function classTeeForPlayer(meta, cls, geschlecht) {
 // in denen ein Spieler tatsächlich mitzählt. Die AK-Klassen selbst bleiben bei der Spieleranlage
 // geschlechtsneutral (einfach "AK30" wählen) – die Trennung in "AK30 Herren" / "AK30 Damen" passiert
 // erst hier, rein für die Anzeige/Rangliste. Männer stapeln sich innerhalb der Herren-AK-Klassen
-// (gemeinsames Tee Gelb), Frauen zusätzlich immer mit in "Damen" (gemeinsames Tee Rot). Herren
-// bleibt bewusst separat (kein automatisches Stapeln mit AK). "Jugend" wird zusätzlich IMMER
-// automatisch anhand des Geburtsjahrs ergänzt (unter 18), egal welche Klasse sonst registriert ist.
+// (gemeinsames Tee Gelb), Herren bleibt bewusst separat (kein automatisches Stapeln mit AK).
+// JEDE Frau zählt immer automatisch in "Damen" mit, unabhängig von der registrierten Klasse
+// (gemeinsames Tee Rot bei allen Frauen) – plus alle AK-Damen-Klassen, für die ihr Alter reicht.
+// "Jugend" wird zusätzlich IMMER automatisch anhand des Geburtsjahrs ergänzt (unter 18).
 function effectiveClassesFor(p) {
   const base = p.classes && p.classes[0];
   const isWoman = p.geschlecht === 'w';
-  const genderWord = isWoman ? 'Damen' : 'Herren';
   const age = p.geburtsjahr ? TOURNAMENT_YEAR - Number(p.geburtsjahr) : null;
   const result = new Set();
 
-  if (isWoman && base === 'Damen') {
+  if (isWoman) {
     result.add('Damen');
     if (age !== null) AK_CLASSES.forEach(c => { if (age >= AK_MIN_AGE[c]) result.add(`${c} Damen`); });
   } else if (AK_CLASSES.includes(base)) {
-    result.add(`${base} ${genderWord}`);
-    if (age !== null) AK_CLASSES.forEach(c => { if (age >= AK_MIN_AGE[c]) result.add(`${c} ${genderWord}`); });
-    if (isWoman) result.add('Damen'); // Frauen zählen zusätzlich immer bei Damen mit (gleiches Tee Rot)
+    result.add(`${base} Herren`);
+    if (age !== null) AK_CLASSES.forEach(c => { if (age >= AK_MIN_AGE[c]) result.add(`${c} Herren`); });
   } else if (base) {
-    result.add(base); // Herren oder manuell "Jugend": kein Stapeln.
+    result.add(base); // Herren: kein Stapeln.
   }
 
   if (age !== null && age < JUGEND_MAX_AGE) result.add('Jugend');
