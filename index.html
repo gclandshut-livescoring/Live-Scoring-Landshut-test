@@ -37,13 +37,12 @@ const BASE = "liveScoring";
 
 async function fbFetch(path, options) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 8000);
+  const timer = setTimeout(() => controller.abort(), 15000);
   try {
-    // cache: 'no-store' + Zeitstempel als Query-Parameter erzwingen eine echte Netzwerkabfrage
-    // bei jedem Aufruf – vor allem mobile Browser (Safari) cachen GET-Requests sonst sehr aggressiv,
-    // was zu veralteten Turnierdaten auf dem Handy führen kann.
-    const sep = path.includes('?') ? '&' : '?';
-    return await fetch(`${FIREBASE_URL}/${BASE}/${path}.json${sep}_=${Date.now()}`, { ...options, cache: 'no-store', signal: controller.signal });
+    // cache: 'no-store' erzwingt eine echte Netzwerkabfrage bei jedem Aufruf – vor allem mobile
+    // Browser (Safari) cachen GET-Requests sonst sehr aggressiv, was zu veralteten Turnierdaten
+    // auf dem Handy führen kann.
+    return await fetch(`${FIREBASE_URL}/${BASE}/${path}.json`, { ...options, cache: 'no-store', signal: controller.signal });
   } finally {
     clearTimeout(timer);
   }
@@ -875,7 +874,12 @@ const badgeStyle = { background: C.accentTint, color: C.accent, fontSize: 12, pa
 // PUBLIC LEADERBOARD
 // ============================================================
 function PublicLeaderboard({ tournament, err, publicOnly }) {
-  if (err) return <div className="wrap" style={{ textAlign: 'center', color: C.red, paddingTop: '20vh' }}>{err}</div>;
+  if (err) return (
+    <div className="wrap" style={{ textAlign: 'center', paddingTop: '20vh' }}>
+      <div style={{ color: C.red, marginBottom: 16 }}>{err}</div>
+      <button onClick={() => window.location.reload()} style={{ padding: '10px 20px', background: C.ink, color: '#fff', border: 'none', borderRadius: 8, fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>Erneut versuchen</button>
+    </div>
+  );
   if (!tournament || !tournament.meta) {
     return (
       <div className="wrap" style={{ textAlign: 'center', paddingTop: '20vh', color: C.muted }}>
