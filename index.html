@@ -39,7 +39,11 @@ async function fbFetch(path, options) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 8000);
   try {
-    return await fetch(`${FIREBASE_URL}/${BASE}/${path}.json`, { ...options, signal: controller.signal });
+    // cache: 'no-store' + Zeitstempel als Query-Parameter erzwingen eine echte Netzwerkabfrage
+    // bei jedem Aufruf – vor allem mobile Browser (Safari) cachen GET-Requests sonst sehr aggressiv,
+    // was zu veralteten Turnierdaten auf dem Handy führen kann.
+    const sep = path.includes('?') ? '&' : '?';
+    return await fetch(`${FIREBASE_URL}/${BASE}/${path}.json${sep}_=${Date.now()}`, { ...options, cache: 'no-store', signal: controller.signal });
   } finally {
     clearTimeout(timer);
   }
