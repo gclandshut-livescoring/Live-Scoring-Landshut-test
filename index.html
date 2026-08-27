@@ -1070,6 +1070,9 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
     visibleRows.sort((a, b) => isStableford ? (b.netPts ?? -1) - (a.netPts ?? -1) : (a.netToPar ?? 999) - (b.netToPar ?? 999));
   }
 
+  // Zeigt Brutto an, wenn entweder eine feste Klasse (Clubmeisterschaft) oder der Brutto-Tab aktiv ist.
+  const showGross = m.classificationMode === 'fixed' || !!activeBruttoClass;
+
   // Ausschluss-Regel anwenden: wenn der Tabellenführer dieser Netto-Ansicht der (ggf. geschlechtsspezifische)
   // Brutto-Sieger ist, wandert die Sieger-Markierung auf den nächstplatzierten Spieler.
   let leaderIndex = visibleRows.length > 0 ? 0 : -1;
@@ -1177,11 +1180,11 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
                     </div>
                   ) : isStableford ? (
                     <div style={{ fontSize: tier ? tier.size : 16, fontWeight: tier ? tier.weight : 600, color: tier ? tier.color : C.ink }}>
-                      {(activeBruttoClass ? r.grossPts : r.netPts) ?? '–'} Pkt.
+                      {(showGross ? r.grossPts : r.netPts) ?? '–'} Pkt.
                     </div>
                   ) : (
-                    <div style={{ fontSize: tier ? tier.size : 16, fontWeight: tier ? tier.weight : 600, color: scoreColorFor(activeBruttoClass ? r.grossToPar : r.netToPar) }}>
-                      {scoreTextFor(activeBruttoClass ? r.grossToPar : r.netToPar)}
+                    <div style={{ fontSize: tier ? tier.size : 16, fontWeight: tier ? tier.weight : 600, color: scoreColorFor(showGross ? r.grossToPar : r.netToPar) }}>
+                      {scoreTextFor(showGross ? r.grossToPar : r.netToPar)}
                     </div>
                   )}
                 </div>
