@@ -820,9 +820,12 @@ function PlayerAdmin({ tournament, reload }) {
       let memberDb = {};
       try { memberDb = (await fbGet('members')) || {}; } catch (e) { /* kein Cache vorhanden, kein Problem */ }
       const memberUpserts = {};
-      lines.forEach(line => {
+      lines.forEach((line, lineIdx) => {
         const parts = line.split(',').map(s => s && s.trim());
         const pname = parts[0], phcp = parts[1];
+        // Kopfzeile überspringen (z. B. aus einer Vorlage), erkennbar daran, dass die
+        // "Handicap"-Spalte in der ersten Zeile keine Zahl ist.
+        if (lineIdx === 0 && phcp !== undefined && isNaN(Number(phcp))) return;
         let idx = 2;
         const pcls = isFixed ? parts[idx++] : undefined;
         const pg = (parts[idx] === 'w' || parts[idx] === 'm') ? parts[idx++] : 'm';
