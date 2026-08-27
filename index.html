@@ -61,6 +61,23 @@ async function fbPatch(path, value) {
   if (!res.ok) throw new Error('Firebase PATCH fehlgeschlagen: ' + res.status);
 }
 
+// ============================================================
+// SPIELER-STAMMDATEN
+// Liegen unter einem eigenen Pfad (nicht im Turnier selbst), überleben also das Anlegen neuer
+// Turniere. Sobald ein Geburtsjahr einmal zu einem Namen erfasst wurde, wird es bei künftigen
+// Uploads/Anlagen mit demselben Namen automatisch übernommen, falls es dort fehlt.
+function memberKey(name) {
+  return (name || '').trim().toLowerCase().replace(/[.#$\[\]/]/g, '_').replace(/\s+/g, '_');
+}
+async function lookupMember(name) {
+  if (!name) return null;
+  try { return await fbGet('members/' + memberKey(name)); } catch (e) { return null; }
+}
+async function upsertMember(name, geburtsjahr, geschlecht) {
+  if (!name || !geburtsjahr) return;
+  try { await fbPatch('members/' + memberKey(name), { name, geburtsjahr, geschlecht }); } catch (e) { /* Stammdaten sind nur ein Komfort-Cache, Fehler hier dürfen die Spieleranlage nicht blockieren */ }
+}
+
 // Farben (angelehnt an Ryder-Cup-Tool, eigenständige Palette fürs Zählspiel)
 const C = {
   board: '#f2efe5', card: '#ffffff', line: '#ddd6c4',
@@ -90,6 +107,46 @@ const TEES = [
   { id: 'Rot', cr: '72.4' },
 ];
 const TEE_IDS = TEES.map(t => t.id);
+
+// Altersklassen-Grenzen (Mindestalter, überlappend): wer 65 ist, qualifiziert sich automatisch
+// auch für AK50 und AK30. Herren/Damen sind davon ausgenommen (kein Alterskriterium, eigenes Tee).
+const AK_CLASSES = ['AK30', 'AK50', 'AK65'];
+const AK_MIN_AGE = { AK30: 30, AK50: 50, AK65: 65 };
+const TOURNAMENT_YEAR = new Date().getFullYear();
+
+// Tee für AK-Klassen hängt vom Geschlecht ab, nicht von der Klasse selbst: Männer spielen Gelb,
+// Frauen spielen Rot (dasselbe Tee wie die Damen) – deshalb können sich AK-Klassen bei Frauen mit
+// Damen NICHT verbinden (andere Regel als bei Herren/AK, wo explizit nur AK-Klassen untereinander
+// stapeln, nicht mit Herren). Herren/Damen/Jugend behalten ihr festes, admin-konfiguriertes Tee.
+function classTeeForPlayer(meta, cls, geschlecht) {
+  if (AK_CLASSES.includes(cls)) return geschlecht === 'w' ? 'Rot' : 'Gelb';
+  const cfg = meta.classConfig && meta.classConfig[cls];
+  return (cfg && cfg.tee) || (geschlecht === 'w' ? 'Rot' : 'Weiß');
+}
+
+// Errechnet aus der registrierten Klasse + Geburtsjahr alle Klassen, in denen ein Spieler tatsächlich
+// mitzählt. Männer: AK-Klassen stapeln sich untereinander (gemeinsames Tee Gelb), Herren bleibt
+// außen vor (eigenes Tee Weiß). Frauen: Damen UND AK-Klassen teilen sich alle dasselbe Tee (Rot),
+// deshalb zählt eine Frau automatisch in Damen + allen AK-Klassen, für die ihr Alter reicht.
+function effectiveClassesFor(p) {
+  const base = p.classes && p.classes[0];
+  if (!base) return [];
+  const isWoman = p.geschlecht === 'w';
+  const age = p.geburtsjahr ? TOURNAMENT_YEAR - Number(p.geburtsjahr) : null;
+
+  if (isWoman && (base === 'Damen' || AK_CLASSES.includes(base))) {
+    const result = new Set(['Damen', base]);
+    if (age !== null) AK_CLASSES.forEach(c => { if (age >= AK_MIN_AGE[c]) result.add(c); });
+    return [...result];
+  }
+  if (!isWoman && AK_CLASSES.includes(base)) {
+    const result = new Set([base]);
+    if (age !== null) AK_CLASSES.forEach(c => { if (age >= AK_MIN_AGE[c]) result.add(c); });
+    return [...result];
+  }
+  // Herren, Jugend: nur die registrierte Klasse, kein Stapeln.
+  return [base];
+}
 
 const DEFAULT_PARS_18 = [4,4,5,5,4,3,5,3,4, 4,4,5,4,3,5,3,4,4]; // GC Landshut
 const DEFAULT_SI_18   = [9,5,11,7,15,3,13,1,17, 8,14,18,12,10,16,6,4,2]; // GC Landshut
@@ -387,10 +444,10 @@ function TournamentSetup({ tournament, reload }) {
     const first2 = allIds.slice(0, Math.min(2, allIds.length));
     return {
       Herren: { rounds: allIds, tee: 'Weiß' },
-      Damen: { rounds: first2, tee: 'Blau' },
-      AK30: { rounds: first2, tee: 'Gelb' },
-      AK50: { rounds: first2, tee: 'Gelb' },
-      AK65: { rounds: first2, tee: 'Gelb' },
+      Damen: { rounds: first2, tee: 'Rot' },
+      AK30: { rounds: first2 }, // Tee automatisch nach Geschlecht (Gelb/Rot)
+      AK50: { rounds: first2 },
+      AK65: { rounds: first2 },
       Jugend: { rounds: first2, tee: 'Gelb' },
     };
   };
@@ -535,9 +592,11 @@ function TournamentSetup({ tournament, reload }) {
       <Field label={type === 'clubmeisterschaft' ? 'Klassifizierung: Runden & Abschlag je Klasse' : 'Netto-Wertung: Handicap-Klassen'}>
         {classificationMode === 'fixed' ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div style={{ fontSize: 11, color: C.muted }}>AK30/AK50/AK65 richten sich automatisch nach Geschlecht: Männer spielen Gelb, Frauen spielen Rot (wie die Damen) – deshalb kein Tee-Auswahlfeld bei den AK-Klassen, und Frauen zählen dort automatisch je nach Geburtsjahr in mehreren AK-Klassen gleichzeitig mit.</div>
             {FIXED_CLASSES.map(cls => {
               const cfg = classConfig[cls] || { rounds: [], tee: 'Weiß' };
               const cfgRounds = cfg.rounds || [];
+              const isAk = AK_CLASSES.includes(cls);
               return (
                 <div key={cls} style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', background: C.board, borderRadius: 8, padding: '8px 10px' }}>
                   <span style={{ fontSize: 13, fontWeight: 600, color: C.inkDim, width: 60 }}>{cls}</span>
@@ -549,16 +608,20 @@ function TournamentSetup({ tournament, reload }) {
                       </label>
                     ))}
                   </div>
-                  <select value={cfg.tee || 'Weiß'} onChange={e => setClassTeeVal(cls, e.target.value)} style={{ ...inputStyle, width: 130 }}>
-                    <optgroup label="Herren">
-                      <option value="Weiß">Weiß (CR 72.8)</option>
-                      <option value="Gelb">Gelb (CR 71.1)</option>
-                    </optgroup>
-                    <optgroup label="Damen">
-                      <option value="Blau">Blau (CR 74.5)</option>
-                      <option value="Rot">Rot (CR 72.4)</option>
-                    </optgroup>
-                  </select>
+                  {isAk ? (
+                    <span style={{ fontSize: 11, color: C.muted, fontStyle: 'italic' }}>Tee: Gelb (Herren) / Rot (Damen) – automatisch</span>
+                  ) : (
+                    <select value={cfg.tee || 'Weiß'} onChange={e => setClassTeeVal(cls, e.target.value)} style={{ ...inputStyle, width: 130 }}>
+                      <optgroup label="Herren">
+                        <option value="Weiß">Weiß (CR 72.8)</option>
+                        <option value="Gelb">Gelb (CR 71.1)</option>
+                      </optgroup>
+                      <optgroup label="Damen">
+                        <option value="Blau">Blau (CR 74.5)</option>
+                        <option value="Rot">Rot (CR 72.4)</option>
+                      </optgroup>
+                    </select>
+                  )}
                 </div>
               );
             })}
@@ -641,27 +704,35 @@ function PlayerAdmin({ tournament, reload }) {
   const [hcp, setHcp] = useState('');
   const [cls, setCls] = useState(meta.classificationMode === 'fixed' ? FIXED_CLASSES[0] : '');
   const [geschlecht, setGeschlecht] = useState('m');
+  const [geburtsjahr, setGeburtsjahr] = useState('');
   const fileRef = useRef(null);
   const [editingId, setEditingId] = useState(null);
   const [editDraft, setEditDraft] = useState(null);
   const [sortKey, setSortKey] = useState('name');
   const [sortDir, setSortDir] = useState(1);
 
-  // Tee wird automatisch aus Geschlecht + Turniereinstellung (Herren/Damen spielen von...) abgeleitet.
-  // Bei fester Klassifizierung (Clubmeisterschaft) kommt der Abschlag aus der Klassen-Konfiguration
-  // (z. B. Herren -> Weiß), nicht aus der allgemeinen Herren/Damen-Einstellung (die nur für Klubturniere gilt).
+  // Tee wird automatisch aus Geschlecht + Klasse abgeleitet. Bei fester Klassifizierung
+  // (Clubmeisterschaft) gilt: AK-Klassen immer nach Geschlecht (Gelb/Rot), Herren/Damen/Jugend
+  // nach der Klassen-Konfiguration. Bei Klubturnieren zählt die allgemeine Herren/Damen-Einstellung.
   const teeForGeschlecht = (g, selectedClass) => {
-    if (meta.classificationMode === 'fixed' && selectedClass && meta.classConfig && meta.classConfig[selectedClass] && meta.classConfig[selectedClass].tee) {
-      return meta.classConfig[selectedClass].tee;
+    if (meta.classificationMode === 'fixed' && selectedClass) {
+      return classTeeForPlayer(meta, selectedClass, g);
     }
-    return g === 'w' ? (meta.damenTee || 'Blau') : (meta.herrenTee || 'Weiß');
+    return g === 'w' ? (meta.damenTee || 'Rot') : (meta.herrenTee || 'Weiß');
   };
 
   const addPlayer = async () => {
     if (!name || hcp === '') return;
     const id = newId();
-    await fbPatch('tournament/players/' + id, { name, hcp: Number(hcp), classes: cls ? [cls] : [], geschlecht, tee: teeForGeschlecht(geschlecht, cls) });
-    setName(''); setHcp('');
+    // Fehlt das Geburtsjahr, aus den Stammdaten übernehmen, falls der Name schon einmal erfasst wurde.
+    let geb = geburtsjahr;
+    if (!geb) {
+      const existing = await lookupMember(name);
+      if (existing && existing.geburtsjahr) geb = existing.geburtsjahr;
+    }
+    await fbPatch('tournament/players/' + id, { name, hcp: Number(hcp), classes: cls ? [cls] : [], geschlecht, geburtsjahr: geb || null, tee: teeForGeschlecht(geschlecht, cls) });
+    if (geb) await upsertMember(name, geb, geschlecht);
+    setName(''); setHcp(''); setGeburtsjahr('');
     await reload();
   };
 
@@ -670,11 +741,11 @@ function PlayerAdmin({ tournament, reload }) {
     await reload();
   };
 
-  // Spieler bearbeiten (Name, Hcp, Klasse, Geschlecht) statt löschen + neu anlegen zu müssen –
-  // wichtig, wenn ein Turnier schon läuft und nur eine Falschangabe korrigiert werden muss.
+  // Spieler bearbeiten (Name, Hcp, Klasse, Geschlecht, Geburtsjahr) statt löschen + neu anlegen zu
+  // müssen – wichtig, wenn ein Turnier schon läuft und nur eine Falschangabe korrigiert werden muss.
   const startEdit = (id, p) => {
     setEditingId(id);
-    setEditDraft({ name: p.name, hcp: String(p.hcp), cls: (p.classes && p.classes[0]) || (meta.classificationMode === 'fixed' ? FIXED_CLASSES[0] : ''), geschlecht: p.geschlecht || 'm' });
+    setEditDraft({ name: p.name, hcp: String(p.hcp), cls: (p.classes && p.classes[0]) || (meta.classificationMode === 'fixed' ? FIXED_CLASSES[0] : ''), geschlecht: p.geschlecht || 'm', geburtsjahr: p.geburtsjahr || '' });
   };
   const cancelEdit = () => { setEditingId(null); setEditDraft(null); };
   const saveEdit = async (id) => {
@@ -684,8 +755,10 @@ function PlayerAdmin({ tournament, reload }) {
       hcp: Number(editDraft.hcp),
       classes: editDraft.cls ? [editDraft.cls] : [],
       geschlecht: editDraft.geschlecht,
+      geburtsjahr: editDraft.geburtsjahr || null,
       tee: teeForGeschlecht(editDraft.geschlecht, editDraft.cls),
     });
+    if (editDraft.geburtsjahr) await upsertMember(editDraft.name, editDraft.geburtsjahr, editDraft.geschlecht);
     setEditingId(null); setEditDraft(null);
     await reload();
   };
@@ -722,7 +795,9 @@ function PlayerAdmin({ tournament, reload }) {
     await reload();
   };
 
-  // CSV-Spalten: name,handicap,klasse,geschlecht,flight  (klasse nur bei fester Klassifizierung nötig, geschlecht = m/w, flight optional)
+  // CSV-Spalten: name,handicap,klasse,geschlecht,geburtsjahr,flight
+  // (klasse nur bei fester Klassifizierung nötig, geschlecht = m/w, geburtsjahr optional aber
+  // wichtig für AK-Klassen-Mehrfachwertung, flight optional)
   // Ist eine Flight-Spalte gefüllt, werden Spieler automatisch zu Flights gruppiert und
   // pro Flight-Namen ein Link + Passwort erzeugt.
   const handleFile = (e) => {
@@ -735,22 +810,35 @@ function PlayerAdmin({ tournament, reload }) {
       const playerUpdates = {};
       const flightGroups = {}; // flightName -> [playerId, ...]
       const isFixed = meta.classificationMode === 'fixed';
+      // Stammdaten einmal komplett laden, um fehlende Geburtsjahre pro Zeile automatisch zu ergänzen.
+      let memberDb = {};
+      try { memberDb = (await fbGet('members')) || {}; } catch (e) { /* kein Cache vorhanden, kein Problem */ }
+      const memberUpserts = {};
       lines.forEach(line => {
         const parts = line.split(',').map(s => s && s.trim());
         const pname = parts[0], phcp = parts[1];
         let idx = 2;
         const pcls = isFixed ? parts[idx++] : undefined;
         const pg = (parts[idx] === 'w' || parts[idx] === 'm') ? parts[idx++] : 'm';
+        let pgeb = (parts[idx] && /^\d{4}$/.test(parts[idx])) ? parts[idx++] : null;
         const pflight = parts[idx];
         if (!pname || phcp === undefined) return;
+        if (!pgeb) {
+          const rec = memberDb[memberKey(pname)];
+          if (rec && rec.geburtsjahr) pgeb = rec.geburtsjahr;
+        }
         const id = newId();
-        playerUpdates[id] = { name: pname, hcp: Number(phcp), classes: pcls ? [pcls] : [], geschlecht: pg, tee: teeForGeschlecht(pg, pcls) };
+        playerUpdates[id] = { name: pname, hcp: Number(phcp), classes: pcls ? [pcls] : [], geschlecht: pg, geburtsjahr: pgeb, tee: teeForGeschlecht(pg, pcls) };
+        if (pgeb) memberUpserts[memberKey(pname)] = { name: pname, geburtsjahr: pgeb, geschlecht: pg };
         if (pflight) {
           if (!flightGroups[pflight]) flightGroups[pflight] = [];
           flightGroups[pflight].push(id);
         }
       });
       await fbPatch('tournament/players', playerUpdates);
+      if (Object.keys(memberUpserts).length > 0) {
+        try { await fbPatch('members', memberUpserts); } catch (e) { /* Stammdaten sind nur ein Cache, kein harter Fehler */ }
+      }
 
       const flightUpdates = {};
       Object.entries(flightGroups).forEach(([flightName, playerIds]) => {
@@ -772,8 +860,8 @@ function PlayerAdmin({ tournament, reload }) {
       <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
           <span style={{ fontSize: 13, color: C.inkDim }}>
-            CSV hochladen: name,handicap{meta.classificationMode === 'fixed' ? ',klasse' : ''},tee,flight
-            <br /><span style={{ fontSize: 11 }}>tee = Weiß/Gelb/Blau/Rot (optional, Standard Weiß). Flight-Spalte optional – gleicher Flight-Name gruppiert automatisch, Link + Passwort werden erzeugt.</span>
+            CSV hochladen: name,handicap{meta.classificationMode === 'fixed' ? ',klasse' : ''},geschlecht,geburtsjahr,flight
+            <br /><span style={{ fontSize: 11 }}>geschlecht = m/w (optional, Standard m). geburtsjahr optional, aber wichtig für die automatische AK-Mehrfachwertung (z.B. 1960) – einmal erfasste Geburtsjahre werden für zukünftige Uploads automatisch anhand des Namens gemerkt, falls sie in einer neuen Datei fehlen. Flight-Spalte optional – gleicher Flight-Name gruppiert automatisch, Link + Passwort werden erzeugt.</span>
           </span>
           <button onClick={() => fileRef.current.click()} style={smallBtn}>Datei wählen</button>
           <input ref={fileRef} type="file" accept=".csv,text/csv" onChange={handleFile} style={{ display: 'none' }} />
@@ -794,6 +882,7 @@ function PlayerAdmin({ tournament, reload }) {
             <option value="m">Herr</option>
             <option value="w">Dame</option>
           </select>
+          <input placeholder="Geburtsjahr" type="number" value={geburtsjahr} onChange={e => setGeburtsjahr(e.target.value)} style={{ ...inputStyle, width: 110 }} />
           <button onClick={addPlayer} style={smallBtn}>+ Hinzufügen</button>
         </div>
       </div>
@@ -828,6 +917,7 @@ function PlayerAdmin({ tournament, reload }) {
                   <option value="m">Herr</option>
                   <option value="w">Dame</option>
                 </select>
+                <input placeholder="Geburtsjahr" type="number" value={editDraft.geburtsjahr} onChange={e => setEditDraft(d => ({ ...d, geburtsjahr: e.target.value }))} style={{ ...inputStyle, width: 110 }} />
               </div>
               <div style={{ display: 'flex', gap: 8 }}>
                 <button onClick={() => saveEdit(id)} style={smallBtn}>Speichern</button>
@@ -838,7 +928,10 @@ function PlayerAdmin({ tournament, reload }) {
             <div key={id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 16px', borderBottom: `1px solid ${C.line}` }}>
               <div>
                 <span style={{ fontSize: 14, fontWeight: 500 }}>{p.name}</span>
-                <span style={{ fontSize: 12, color: C.muted, marginLeft: 8 }}>Hcp {p.hcp} · {p.geschlecht === 'w' ? 'Dame' : 'Herr'} · Tee {p.tee || teeForGeschlecht(p.geschlecht, p.classes && p.classes[0])} {p.classes && p.classes.length ? '· ' + p.classes.join(', ') : ''}</span>
+                <span style={{ fontSize: 12, color: C.muted, marginLeft: 8 }}>
+                  Hcp {p.hcp} · {p.geschlecht === 'w' ? 'Dame' : 'Herr'}{p.geburtsjahr ? ` · *${p.geburtsjahr}` : ''} · Tee {p.tee || teeForGeschlecht(p.geschlecht, p.classes && p.classes[0])}
+                  {meta.classificationMode === 'fixed' ? ` · ${effectiveClassesFor(p).join(', ') || '–'}` : (p.classes && p.classes.length ? '· ' + p.classes.join(', ') : '')}
+                </span>
               </div>
               <div style={{ display: 'flex', gap: 6 }}>
                 <button onClick={() => startEdit(id, p)} style={smallBtn}>Bearbeiten</button>
@@ -868,6 +961,17 @@ function FlightAdmin({ tournament, reload }) {
 
   const toggle = (id) => setSelected(sel => sel.includes(id) ? sel.filter(x => x !== id) : [...sel, id]);
   const toggleRound = (rid) => setSelectedRounds(sel => sel.includes(rid) ? sel.filter(x => x !== rid) : [...sel, rid]);
+
+  // Warnt, wenn ein Flight mit mehr als einer Runde angelegt wird, obwohl die Klasse(n) der
+  // ausgewählten Spieler (alles außer Herren) an unterschiedlichen Tagen spielt (je 1 Runde pro Tag).
+  const multiDayWarning = (playerIds, roundIds) => {
+    if (roundIds.length <= 1) return null;
+    const nonHerren = playerIds
+      .map(id => players[id] && players[id].classes && players[id].classes[0])
+      .filter(cls => cls && cls !== 'Herren');
+    if (nonHerren.length === 0) return null;
+    return `Achtung: ${[...new Set(nonHerren)].join(', ')} spielt an unterschiedlichen Tagen (je 1 Runde pro Tag) – bitte lieber zwei separate Flights (Samstag / Sonntag) statt einem Flight mit mehreren Runden anlegen.`;
+  };
 
   // Spieler, die schon in einem anderen Flight stecken – bei der Neuanlage ausgegraut, damit man
   // niemanden versehentlich doppelt einteilt.
@@ -945,6 +1049,11 @@ function FlightAdmin({ tournament, reload }) {
                 </label>
               ))}
             </div>
+            {multiDayWarning(selected, selectedRounds) && (
+              <div style={{ marginTop: 8, fontSize: 12, color: C.red, background: C.redTint, padding: '8px 10px', borderRadius: 6 }}>
+                ⚠️ {multiDayWarning(selected, selectedRounds)}
+              </div>
+            )}
           </div>
         )}
         <button onClick={createFlight} style={smallBtn}>+ Flight erstellen</button>
@@ -967,13 +1076,20 @@ function FlightAdmin({ tournament, reload }) {
                 })}
               </div>
               {allRounds.length > 1 && (
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
-                  {allRounds.map(r => (
-                    <label key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, color: C.inkDim, background: C.board, padding: '4px 10px', borderRadius: 6 }}>
-                      <input type="checkbox" checked={editRounds.includes(r.id)} onChange={() => toggleEditRound(r.id)} />
-                      {r.label}
-                    </label>
-                  ))}
+                <div style={{ marginBottom: 10 }}>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    {allRounds.map(r => (
+                      <label key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, color: C.inkDim, background: C.board, padding: '4px 10px', borderRadius: 6 }}>
+                        <input type="checkbox" checked={editRounds.includes(r.id)} onChange={() => toggleEditRound(r.id)} />
+                        {r.label}
+                      </label>
+                    ))}
+                  </div>
+                  {multiDayWarning(editSelected, editRounds) && (
+                    <div style={{ marginTop: 8, fontSize: 12, color: C.red, background: C.redTint, padding: '8px 10px', borderRadius: 6 }}>
+                      ⚠️ {multiDayWarning(editSelected, editRounds)}
+                    </div>
+                  )}
                 </div>
               )}
               <div style={{ display: 'flex', gap: 8 }}>
@@ -1154,9 +1270,12 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
   const rows = Object.entries(players).map(([id, p]) => {
     const thruScores = findPlayerRoundScores(id, effectiveRound);
     // Bei fester Klassifizierung zählt für Brutto nur die Rundenauswahl der eigenen Klasse
-    // (z. B. Herren 3 Runden, Damen 2 Runden).
+    // (z. B. Herren 3 Runden, Damen 2 Runden). Für die Baseline/Rundenauswahl bleibt die
+    // REGISTRIERTE Klasse maßgeblich (nicht die zusätzlichen Alters-Klassen), da alle
+    // gestapelten Klassen ohnehin dasselbe Tee und damit dieselbe Rundenanzahl haben.
     const playerClass = (p.classes && p.classes[0]) || null;
     const classRounds = m.classificationMode === 'fixed' && playerClass ? classRoundsFor(m, playerClass) : (m.rounds || []);
+    const effClasses = m.classificationMode === 'fixed' ? effectiveClassesFor(p) : (p.classes || []);
     // Netto-Klubmeisterschaft läuft als eigenständige Stableford-Netto-Wertung, unabhängig vom
     // gewählten Haupt-Scoring-Modus des Turniers (Zählspiel für die Brutto-Klassen) – ebenfalls
     // nur über die Runden der eigenen Klasse, damit Herren (3 Runden) und Damen (2 Runden) fair
@@ -1166,13 +1285,13 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
     const cmNettoDiff = cmNettoRaw === null ? null : cmNettoRaw - cmNettoBaselineRow;
     if (isStableford) {
       const { grossPts, netPts, gbe } = stablefordTotalsAcrossRounds(id, p.hcp, p.tee, classRounds);
-      return { id, ...p, grossPts, netPts, gbe, cmNettoRaw, cmNettoDiff, thru: holesPlayed(thruScores) };
+      return { id, ...p, effClasses, grossPts, netPts, gbe, cmNettoRaw, cmNettoDiff, thru: holesPlayed(thruScores) };
     }
     const { gross, par } = totalsAcrossRounds(id, classRounds);
     const grossToPar = gross === null ? null : gross - par;
     const net = gross === null ? null : Math.round(gross - p.hcp);
     const netToPar = net === null ? null : net - par;
-    return { id, ...p, gross, grossToPar, net, netToPar, cmNettoRaw, cmNettoDiff, thru: holesPlayed(thruScores) };
+    return { id, ...p, effClasses, gross, grossToPar, net, netToPar, cmNettoRaw, cmNettoDiff, thru: holesPlayed(thruScores) };
   });
 
   const fmtToPar = (v) => v === null ? '–' : v === 0 ? 'E' : v > 0 ? '+' + v : String(v);
@@ -1203,8 +1322,9 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
     visibleRows = rows.filter(r => r.cmNettoDiff !== null);
     visibleRows.sort((a, b) => (b.cmNettoDiff ?? -999) - (a.cmNettoDiff ?? -999));
   } else if (m.classificationMode === 'fixed') {
-    // Feste Klassen (Herren/Damen/AK/Jugend) entscheiden nach Brutto.
-    visibleRows = rows.filter(r => (r.classes || []).includes(activeClass));
+    // Feste Klassen (Herren/Damen/AK/Jugend) entscheiden nach Brutto. Ein Spieler kann dank
+    // Alters-Mehrfachwertung in mehreren AK-Klassen gleichzeitig auftauchen (effClasses).
+    visibleRows = rows.filter(r => (r.effClasses || []).includes(activeClass));
     visibleRows.sort((a, b) => (a.grossToPar ?? 999) - (b.grossToPar ?? 999));
   } else if (activeBruttoClass) {
     visibleRows = rows.filter(r => (isStableford ? r.grossPts !== null : r.gross !== null) && (!activeBruttoClass.gender || r.geschlecht === activeBruttoClass.gender));
