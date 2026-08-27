@@ -642,6 +642,10 @@ function PlayerAdmin({ tournament, reload }) {
   const [cls, setCls] = useState(meta.classificationMode === 'fixed' ? FIXED_CLASSES[0] : '');
   const [geschlecht, setGeschlecht] = useState('m');
   const fileRef = useRef(null);
+  const [editingId, setEditingId] = useState(null);
+  const [editDraft, setEditDraft] = useState(null);
+  const [sortKey, setSortKey] = useState('name');
+  const [sortDir, setSortDir] = useState(1);
 
   // Tee wird automatisch aus Geschlecht + Turniereinstellung (Herren/Damen spielen von...) abgeleitet.
   // Bei fester Klassifizierung (Clubmeisterschaft) kommt der Abschlag aus der Klassen-Konfiguration
@@ -665,6 +669,44 @@ function PlayerAdmin({ tournament, reload }) {
     await fbPut('tournament/players/' + id, null);
     await reload();
   };
+
+  // Spieler bearbeiten (Name, Hcp, Klasse, Geschlecht) statt löschen + neu anlegen zu müssen –
+  // wichtig, wenn ein Turnier schon läuft und nur eine Falschangabe korrigiert werden muss.
+  const startEdit = (id, p) => {
+    setEditingId(id);
+    setEditDraft({ name: p.name, hcp: String(p.hcp), cls: (p.classes && p.classes[0]) || (meta.classificationMode === 'fixed' ? FIXED_CLASSES[0] : ''), geschlecht: p.geschlecht || 'm' });
+  };
+  const cancelEdit = () => { setEditingId(null); setEditDraft(null); };
+  const saveEdit = async (id) => {
+    if (!editDraft.name || editDraft.hcp === '') return;
+    await fbPatch('tournament/players/' + id, {
+      name: editDraft.name,
+      hcp: Number(editDraft.hcp),
+      classes: editDraft.cls ? [editDraft.cls] : [],
+      geschlecht: editDraft.geschlecht,
+      tee: teeForGeschlecht(editDraft.geschlecht, editDraft.cls),
+    });
+    setEditingId(null); setEditDraft(null);
+    await reload();
+  };
+
+  // Sortierbare Spaltenüberschriften für die Spielerliste.
+  const sortedPlayerEntries = Object.entries(players).sort((a, b) => {
+    const [, pa] = a, [, pb] = b;
+    let va, vb;
+    if (sortKey === 'hcp') { va = pa.hcp; vb = pb.hcp; }
+    else if (sortKey === 'class') { va = (pa.classes && pa.classes[0]) || ''; vb = (pb.classes && pb.classes[0]) || ''; }
+    else if (sortKey === 'geschlecht') { va = pa.geschlecht || ''; vb = pb.geschlecht || ''; }
+    else { va = (pa.name || '').toLowerCase(); vb = (pb.name || '').toLowerCase(); }
+    if (va < vb) return -1 * sortDir;
+    if (va > vb) return 1 * sortDir;
+    return 0;
+  });
+  const toggleSort = (key) => {
+    if (sortKey === key) setSortDir(d => -d);
+    else { setSortKey(key); setSortDir(1); }
+  };
+  const sortArrow = (key) => sortKey === key ? (sortDir === 1 ? ' ▲' : ' ▼') : '';
 
   // Berechnet für alle bestehenden Spieler das Tee neu (z. B. nach nachträglicher Änderung der
   // Klassen-Konfiguration) – nötig, weil bereits gespeicherte Spieler ihr Tee nicht automatisch aktualisieren.
@@ -761,14 +803,49 @@ function PlayerAdmin({ tournament, reload }) {
       )}
 
       <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, overflow: 'hidden' }}>
-        {Object.entries(players).map(([id, p]) => (
-          <div key={id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 16px', borderBottom: `1px solid ${C.line}` }}>
-            <div>
-              <span style={{ fontSize: 14, fontWeight: 500 }}>{p.name}</span>
-              <span style={{ fontSize: 12, color: C.muted, marginLeft: 8 }}>Hcp {p.hcp} · {p.geschlecht === 'w' ? 'Dame' : 'Herr'} · Tee {p.tee || teeForGeschlecht(p.geschlecht, p.classes && p.classes[0])} {p.classes && p.classes.length ? '· ' + p.classes.join(', ') : ''}</span>
-            </div>
-            <button onClick={() => removePlayer(id)} style={{ ...smallBtn, color: C.red }}>Entfernen</button>
+        {Object.keys(players).length > 0 && (
+          <div style={{ display: 'flex', gap: 14, padding: '8px 16px', borderBottom: `1px solid ${C.line}`, background: C.board }}>
+            <button onClick={() => toggleSort('name')} style={{ ...smallBtn, border: 'none', background: 'none', padding: 0, fontSize: 11 }}>Name{sortArrow('name')}</button>
+            <button onClick={() => toggleSort('hcp')} style={{ ...smallBtn, border: 'none', background: 'none', padding: 0, fontSize: 11 }}>Hcp{sortArrow('hcp')}</button>
+            {meta.classificationMode === 'fixed' && (
+              <button onClick={() => toggleSort('class')} style={{ ...smallBtn, border: 'none', background: 'none', padding: 0, fontSize: 11 }}>Klasse{sortArrow('class')}</button>
+            )}
+            <button onClick={() => toggleSort('geschlecht')} style={{ ...smallBtn, border: 'none', background: 'none', padding: 0, fontSize: 11 }}>Geschlecht{sortArrow('geschlecht')}</button>
           </div>
+        )}
+        {sortedPlayerEntries.map(([id, p]) => (
+          editingId === id ? (
+            <div key={id} style={{ padding: '10px 16px', borderBottom: `1px solid ${C.line}`, background: C.board }}>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+                <input placeholder="Name" value={editDraft.name} onChange={e => setEditDraft(d => ({ ...d, name: e.target.value }))} style={{ ...inputStyle, flex: 1, minWidth: 120 }} />
+                <input placeholder="Hcp" type="number" value={editDraft.hcp} onChange={e => setEditDraft(d => ({ ...d, hcp: e.target.value }))} style={{ ...inputStyle, width: 80 }} />
+                {meta.classificationMode === 'fixed' && (
+                  <select value={editDraft.cls} onChange={e => setEditDraft(d => ({ ...d, cls: e.target.value }))} style={{ ...inputStyle, width: 110 }}>
+                    {FIXED_CLASSES.map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                )}
+                <select value={editDraft.geschlecht} onChange={e => setEditDraft(d => ({ ...d, geschlecht: e.target.value }))} style={{ ...inputStyle, width: 110 }}>
+                  <option value="m">Herr</option>
+                  <option value="w">Dame</option>
+                </select>
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button onClick={() => saveEdit(id)} style={smallBtn}>Speichern</button>
+                <button onClick={cancelEdit} style={{ ...smallBtn, color: C.muted }}>Abbrechen</button>
+              </div>
+            </div>
+          ) : (
+            <div key={id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 16px', borderBottom: `1px solid ${C.line}` }}>
+              <div>
+                <span style={{ fontSize: 14, fontWeight: 500 }}>{p.name}</span>
+                <span style={{ fontSize: 12, color: C.muted, marginLeft: 8 }}>Hcp {p.hcp} · {p.geschlecht === 'w' ? 'Dame' : 'Herr'} · Tee {p.tee || teeForGeschlecht(p.geschlecht, p.classes && p.classes[0])} {p.classes && p.classes.length ? '· ' + p.classes.join(', ') : ''}</span>
+              </div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button onClick={() => startEdit(id, p)} style={smallBtn}>Bearbeiten</button>
+                <button onClick={() => removePlayer(id)} style={{ ...smallBtn, color: C.red }}>Entfernen</button>
+              </div>
+            </div>
+          )
         ))}
         {Object.keys(players).length === 0 && <div style={{ padding: 20, textAlign: 'center', color: C.muted, fontSize: 13 }}>Noch keine Spieler angelegt.</div>}
       </div>
@@ -784,9 +861,21 @@ function FlightAdmin({ tournament, reload }) {
   const [name, setName] = useState('');
   const [selected, setSelected] = useState([]);
   const [selectedRounds, setSelectedRounds] = useState(allRounds.map(r => r.id));
+  const [editingFlightId, setEditingFlightId] = useState(null);
+  const [editSelected, setEditSelected] = useState([]);
+  const [editRounds, setEditRounds] = useState([]);
+  const [editName, setEditName] = useState('');
 
   const toggle = (id) => setSelected(sel => sel.includes(id) ? sel.filter(x => x !== id) : [...sel, id]);
   const toggleRound = (rid) => setSelectedRounds(sel => sel.includes(rid) ? sel.filter(x => x !== rid) : [...sel, rid]);
+
+  // Spieler, die schon in einem anderen Flight stecken – bei der Neuanlage ausgegraut, damit man
+  // niemanden versehentlich doppelt einteilt.
+  const assignedElsewhere = (playerId) => Object.entries(flights).some(([fid, f]) => fid !== editingFlightId && (f.playerIds || []).includes(playerId));
+  const whichFlight = (playerId) => {
+    const entry = Object.entries(flights).find(([fid, f]) => fid !== editingFlightId && (f.playerIds || []).includes(playerId));
+    return entry ? entry[1].name : null;
+  };
 
   const createFlight = async () => {
     if (!name || selected.length === 0 || selectedRounds.length === 0) return;
@@ -798,6 +887,24 @@ function FlightAdmin({ tournament, reload }) {
 
   const removeFlight = async (id) => {
     await fbPut('tournament/flights/' + id, null);
+    await reload();
+  };
+
+  // Flight bearbeiten (Spieler-Zusammensetzung, Runden) – Link + Passwort bleiben dabei unverändert,
+  // damit bereits verschickte Links gültig bleiben. Wichtig z. B. wenn ein Spieler kurzfristig aufgibt.
+  const startEditFlight = (id, f) => {
+    setEditingFlightId(id);
+    setEditName(f.name);
+    setEditSelected(f.playerIds || []);
+    setEditRounds(f.rounds || allRounds.map(r => r.id));
+  };
+  const cancelEditFlight = () => { setEditingFlightId(null); setEditSelected([]); setEditRounds([]); setEditName(''); };
+  const toggleEditPlayer = (id) => setEditSelected(sel => sel.includes(id) ? sel.filter(x => x !== id) : [...sel, id]);
+  const toggleEditRound = (rid) => setEditRounds(sel => sel.includes(rid) ? sel.filter(x => x !== rid) : [...sel, rid]);
+  const saveEditFlight = async (id) => {
+    if (!editName || editSelected.length === 0 || editRounds.length === 0) return;
+    await fbPatch('tournament/flights/' + id, { name: editName, playerIds: editSelected, rounds: editRounds });
+    cancelEditFlight();
     await reload();
   };
 
@@ -817,12 +924,15 @@ function FlightAdmin({ tournament, reload }) {
         <div style={{ fontSize: 13, color: C.inkDim, marginBottom: 10 }}>Neuen Flight anlegen</div>
         <input placeholder="Flight-Name (z. B. Flight 1)" value={name} onChange={e => setName(e.target.value)} style={{ ...inputStyle, marginBottom: 10 }} />
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
-          {Object.entries(players).map(([id, p]) => (
-            <button key={id} onClick={() => toggle(id)}
-              style={{ padding: '6px 12px', borderRadius: 6, border: `1px solid ${selected.includes(id) ? C.ink : C.line}`, background: selected.includes(id) ? C.ink : '#fff', color: selected.includes(id) ? '#fff' : C.ink, fontSize: 12, cursor: 'pointer' }}>
-              {p.name}
-            </button>
-          ))}
+          {Object.entries(players).map(([id, p]) => {
+            const taken = assignedElsewhere(id);
+            return (
+              <button key={id} onClick={() => !taken && toggle(id)} disabled={taken} title={taken ? `Bereits in ${whichFlight(id)}` : ''}
+                style={{ padding: '6px 12px', borderRadius: 6, border: `1px solid ${selected.includes(id) ? C.ink : C.line}`, background: selected.includes(id) ? C.ink : (taken ? C.board : '#fff'), color: selected.includes(id) ? '#fff' : (taken ? C.muted : C.ink), fontSize: 12, cursor: taken ? 'not-allowed' : 'pointer', opacity: taken ? 0.6 : 1 }}>
+                {p.name}{taken ? ' (vergeben)' : ''}
+              </button>
+            );
+          })}
         </div>
         {allRounds.length > 1 && (
           <div style={{ marginBottom: 10 }}>
@@ -842,20 +952,54 @@ function FlightAdmin({ tournament, reload }) {
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         {Object.entries(flights).map(([id, f]) => (
-          <div key={id} style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: 16 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-              <span style={{ fontWeight: 600, fontSize: 14 }}>{f.name}</span>
-              <button onClick={() => removeFlight(id)} style={{ ...smallBtn, color: C.red }}>Entfernen</button>
+          editingFlightId === id ? (
+            <div key={id} style={{ background: C.card, border: `1px solid ${C.ink}`, borderRadius: 12, padding: 16 }}>
+              <input value={editName} onChange={e => setEditName(e.target.value)} style={{ ...inputStyle, marginBottom: 10 }} />
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
+                {Object.entries(players).map(([pid, p]) => {
+                  const taken = assignedElsewhere(pid) && !editSelected.includes(pid);
+                  return (
+                    <button key={pid} onClick={() => !taken && toggleEditPlayer(pid)} disabled={taken} title={taken ? `Bereits in ${whichFlight(pid)}` : ''}
+                      style={{ padding: '6px 12px', borderRadius: 6, border: `1px solid ${editSelected.includes(pid) ? C.ink : C.line}`, background: editSelected.includes(pid) ? C.ink : (taken ? C.board : '#fff'), color: editSelected.includes(pid) ? '#fff' : (taken ? C.muted : C.ink), fontSize: 12, cursor: taken ? 'not-allowed' : 'pointer', opacity: taken ? 0.6 : 1 }}>
+                      {p.name}{taken ? ' (vergeben)' : ''}
+                    </button>
+                  );
+                })}
+              </div>
+              {allRounds.length > 1 && (
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+                  {allRounds.map(r => (
+                    <label key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, color: C.inkDim, background: C.board, padding: '4px 10px', borderRadius: 6 }}>
+                      <input type="checkbox" checked={editRounds.includes(r.id)} onChange={() => toggleEditRound(r.id)} />
+                      {r.label}
+                    </label>
+                  ))}
+                </div>
+              )}
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button onClick={() => saveEditFlight(id)} style={smallBtn}>Speichern</button>
+                <button onClick={cancelEditFlight} style={{ ...smallBtn, color: C.muted }}>Abbrechen</button>
+              </div>
             </div>
-            <div style={{ fontSize: 12, color: C.muted, marginBottom: 4 }}>{(f.playerIds || []).map(pid => players[pid]?.name).filter(Boolean).join(', ')}</div>
-            {f.rounds && allRounds.length > 1 && (
-              <div style={{ fontSize: 11, color: C.accent, marginBottom: 8 }}>Gilt für: {allRounds.filter(r => f.rounds.includes(r.id)).map(r => r.label).join(', ')}</div>
-            )}
-            <div style={{ fontSize: 12, color: C.inkDim, wordBreak: 'break-all', background: C.board, padding: '8px 10px', borderRadius: 6 }}>
-              {baseUrl}?m={f.token}
+          ) : (
+            <div key={id} style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: 16 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                <span style={{ fontWeight: 600, fontSize: 14 }}>{f.name}</span>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <button onClick={() => startEditFlight(id, f)} style={smallBtn}>Bearbeiten</button>
+                  <button onClick={() => removeFlight(id)} style={{ ...smallBtn, color: C.red }}>Entfernen</button>
+                </div>
+              </div>
+              <div style={{ fontSize: 12, color: C.muted, marginBottom: 4 }}>{(f.playerIds || []).map(pid => players[pid]?.name).filter(Boolean).join(', ')}</div>
+              {f.rounds && allRounds.length > 1 && (
+                <div style={{ fontSize: 11, color: C.accent, marginBottom: 8 }}>Gilt für: {allRounds.filter(r => f.rounds.includes(r.id)).map(r => r.label).join(', ')}</div>
+              )}
+              <div style={{ fontSize: 12, color: C.inkDim, wordBreak: 'break-all', background: C.board, padding: '8px 10px', borderRadius: 6 }}>
+                {baseUrl}?m={f.token}
+              </div>
+              <div style={{ fontSize: 12, color: C.inkDim, marginTop: 4 }}>Passwort: <b>{f.password}</b></div>
             </div>
-            <div style={{ fontSize: 12, color: C.inkDim, marginTop: 4 }}>Passwort: <b>{f.password}</b></div>
-          </div>
+          )
         ))}
         {Object.keys(flights).length === 0 && <div style={{ color: C.muted, fontSize: 13, padding: 10 }}>Noch keine Flights angelegt.</div>}
       </div>
