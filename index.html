@@ -210,7 +210,13 @@ function courseFor(holes) {
 function classRoundIdsFor(m, cls) {
   const cfg = m.classConfig && m.classConfig[cls];
   if (cfg && cfg.rounds && cfg.rounds.length) return cfg.rounds;
-  return (m.rounds || []).map(r => r.id); // Fallback: alle Runden (ältere Turniere ohne classConfig)
+  // Sinnvoller Fallback, falls für eine Klasse (noch) keine eigene Konfiguration gespeichert ist
+  // (z. B. weil sie erst nachträglich hinzugekommen ist, wie Netto-Clubmeisterschaft/Jugend):
+  // Herren nutzt alle Runden, alle anderen Klassen die ersten zwei – NICHT einfach "alle Runden",
+  // sonst verfälscht sich die Basislinie bei Klassen mit weniger Runden als Herren massiv.
+  const allIds = (m.rounds || []).map(r => r.id);
+  if (cls === 'Herren') return allIds;
+  return allIds.slice(0, Math.min(2, allIds.length));
 }
 function classRoundsFor(m, cls) {
   const ids = classRoundIdsFor(m, cls);
@@ -479,6 +485,7 @@ function TournamentSetup({ tournament, reload }) {
   const [rounds, setRounds] = useState(m.rounds || [{ id: 1, label: 'Runde 1' }, { id: 2, label: 'Runde 2' }]);
   const [scoringMode, setScoringMode] = useState(m.scoringMode || ((m.type || 'clubmeisterschaft') === 'clubmeisterschaft' || (m.type || '') === 'masters' ? 'strokeplay_net' : 'stableford'));
   const [adminPin, setAdminPin] = useState(m.adminPin || '2026');
+  const [scoringLocked, setScoringLocked] = useState(!!m.scoringLocked);
   const [herrenTee, setHerrenTee] = useState(m.herrenTee || 'Weiß');
   const [damenTee, setDamenTee] = useState(m.damenTee || 'Blau');
   const [bruttoSplit, setBruttoSplit] = useState(!!(m.bruttoClasses && m.bruttoClasses.length === 2));
@@ -563,6 +570,7 @@ function TournamentSetup({ tournament, reload }) {
       herrenTee, damenTee,
       classConfig,
       bruttoClasses,
+      scoringLocked,
     };
     await fbPatch('tournament/meta', meta);
     await reload();
@@ -571,7 +579,48 @@ function TournamentSetup({ tournament, reload }) {
     setTimeout(() => setSaved(false), 2000);
   };
 
+  // Sofort-Umschalter für die Scoring-Sperre, unabhängig vom restlichen Speichern-Klick – damit man
+  // das Scoring am Turniertag mit einem Klick freigeben kann, ohne das ganze Formular anzufassen.
+  const toggleScoringLock = async () => {
+    const next = !scoringLocked;
+    setScoringLocked(next);
+    await fbPatch('tournament/meta', { scoringLocked: next });
+    await reload();
+  };
+
+  // Setzt ALLE eingetragenen Scores zurück (z. B. weil Spieler vorab zum Testen schon was eingetippt
+  // haben) – Spieler, Flights und die Turnier-Konfiguration bleiben dabei unangetastet.
+  const [resetting, setResetting] = useState(false);
+  const resetAllScores = async () => {
+    if (!window.confirm('Wirklich ALLE bisher eingetragenen Scores für dieses Turnier löschen? Spieler, Flights und Einstellungen bleiben erhalten. Das kann nicht rückgängig gemacht werden.')) return;
+    setResetting(true);
+    await fbPut('tournament/scores', null);
+    await reload();
+    setResetting(false);
+  };
+
   return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ background: scoringLocked ? C.redTint : C.greenTint, border: `1px solid ${scoringLocked ? C.red : C.green}`, borderRadius: 12, padding: 20 }}>
+        <div style={{ fontSize: 14, fontWeight: 600, color: scoringLocked ? C.red : C.green, marginBottom: 4 }}>
+          {scoringLocked ? '🔒 Scoring für Spieler gesperrt' : '🔓 Scoring für Spieler freigeschaltet'}
+        </div>
+        <div style={{ fontSize: 12, color: C.inkDim, marginBottom: 10 }}>
+          {scoringLocked
+            ? 'Spieler sehen über ihren Flight-Link nur einen Hinweis, dass es noch nicht losgeht. Du selbst kannst über den Tab "Scores" trotzdem jederzeit testen/eintragen.'
+            : 'Spieler können über ihren Flight-Link normal Scores eintragen.'}
+        </div>
+        <button onClick={toggleScoringLock} style={{ ...smallBtn, background: scoringLocked ? C.green : C.red, color: '#fff', border: 'none' }}>
+          {scoringLocked ? 'Jetzt freischalten' : 'Jetzt sperren'}
+        </button>
+      </div>
+
+      <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20 }}>
+        <div style={{ fontSize: 14, fontWeight: 600, color: C.inkDim, marginBottom: 4 }}>Alle Scores zurücksetzen</div>
+        <div style={{ fontSize: 12, color: C.muted, marginBottom: 10 }}>Löscht alle bisher eingetragenen Löcher/Schläge (z. B. weil vorab zum Testen schon was eingetippt wurde). Spieler, Flights, Links und Passwörter bleiben unverändert erhalten – niemand braucht einen neuen Link.</div>
+        <button onClick={resetAllScores} disabled={resetting} style={{ ...smallBtn, color: C.red, opacity: resetting ? 0.6 : 1 }}>{resetting ? 'Wird zurückgesetzt…' : 'Alle Scores löschen'}</button>
+      </div>
+
     <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20 }}>
       <Field label="Turniername">
         <input value={name} onChange={e => setName(e.target.value)} placeholder="z. B. Clubmeisterschaft 2026" style={inputStyle} />
@@ -731,6 +780,7 @@ function TournamentSetup({ tournament, reload }) {
       <button onClick={save} disabled={saving} style={{ padding: '11px 20px', background: C.ink, color: '#fff', border: 'none', borderRadius: 6, fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>
         {saving ? 'Speichert…' : saved ? 'Gespeichert ✓' : 'Turnier speichern'}
       </button>
+    </div>
     </div>
   );
 }
@@ -2026,6 +2076,18 @@ function SoloEntry({ tournament, flightId, reload }) {
   const flight = tournament.flights[flightId];
   const players = (flight.playerIds || []).map(id => ({ id, ...tournament.players[id] }));
   const allFlightScores = (tournament.scores && tournament.scores[flightId]) || {};
+
+  // Scoring-Sperre: Spieler sehen bis zur Freigabe durch den Admin nur diesen Hinweis, keine
+  // Eingabemöglichkeit. Der Admin selbst ist davon nicht betroffen (nutzt den separaten "Scores"-Tab).
+  if (m.scoringLocked) {
+    return (
+      <div className="wrap" style={{ maxWidth: 380, textAlign: 'center', paddingTop: '15vh' }}>
+        <div style={{ fontSize: 40, marginBottom: 12 }}>🔒</div>
+        <div style={{ fontSize: 18, fontWeight: 600, marginBottom: 8 }}>Noch nicht freigeschaltet</div>
+        <div style={{ fontSize: 14, color: C.muted }}>Das Live-Scoring für {flight.name} startet in Kürze. Bitte diese Seite später erneut öffnen.</div>
+      </div>
+    );
+  }
 
   // Jeder Spieler hat (bei fester Klassifizierung) seine eigene Rundenliste, abhängig von seiner Klasse
   // (z. B. Herren 3 Runden, Damen 2 Runden). Zusätzlich schränkt der Flight selbst ein, für welche Runde(n)
