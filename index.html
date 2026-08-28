@@ -13,6 +13,8 @@
 <script src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js" crossorigin></script>
 <script src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
 <script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7/babel.min.js" crossorigin></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
 <style>
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; background: #f2efe5; }
@@ -1052,9 +1054,28 @@ function computeClassRanking(tournament, classId) {
   return rows.filter(r => r.effClasses.includes(classId) && r.grossToPar !== null).sort((a, b) => a.grossToPar - b.grossToPar);
 }
 
-function FlightShareButtons({ flightName, link, password }) {
+function FlightShareButtons({ flightName, link, password, tournamentName, publicLink }) {
   const [copied, setCopied] = useState(false);
-  const message = `Live-Scoring ${flightName}:\n${link}\nPasswort: ${password}`;
+  // Onboarding-Nachricht nach Walters Vorlage, ergänzt um Link/Passwort zur Eingabe und den
+  // Zuschauer-Link zur Live-Rangliste.
+  const lines = [
+    `Guten Morgen, willkommen bei der${tournamentName ? ` ${tournamentName}` : ''}!`,
+    `In diesem Jahr haben wir erstmalig ein Live-Scoring.`,
+    ``,
+    `Ein Spieler des Flights kann mit diesem Link die Scores eingeben:`,
+    link,
+    `Passwort: ${password}`,
+    ``,
+  ];
+  if (publicLink) {
+    lines.push(`Die Ergebnisse sind dann live hier sichtbar:`, publicLink, ``);
+  }
+  lines.push(
+    `Das Live-Scoring lebt vom Mitmachen. Danke, dass ihr dabei seid.`,
+    ``,
+    `Viel Erfolg und viel Spaß bei der${tournamentName ? ` ${tournamentName}` : ''}!`,
+  );
+  const message = lines.join('\n');
   const waHref = `https://wa.me/?text=${encodeURIComponent(message)}`;
   const copyText = async () => {
     try {
@@ -1143,6 +1164,56 @@ function FlightAdmin({ tournament, reload }) {
   const baseUrl = window.location.origin + window.location.pathname;
   // Alphabetisch sortierte Spielerliste für die Auswahl-Buttons (leichter zu finden bei vielen Spielern).
   const sortedPlayers = Object.entries(players).sort((a, b) => (a[1].name || '').localeCompare(b[1].name || ''));
+
+  // PDF mit einer Seite pro Flight: Flight-Name, Spielernamen, QR-Code zum Link, PIN darunter.
+  // Für Spieler, deren Handynummer man nicht hat (kein WhatsApp-Versand möglich) – ausdrucken und
+  // am Sekretariat auslegen, Spieler scannen den QR-Code selbst und tippen das Passwort ein.
+  const [pdfGenerating, setPdfGenerating] = useState(false);
+  const generateFlightsPDF = async () => {
+    if (!window.jspdf || !window.QRCode) {
+      alert('PDF-Bibliothek konnte nicht geladen werden. Bitte Internetverbindung prüfen und Seite neu laden.');
+      return;
+    }
+    setPdfGenerating(true);
+    try {
+      const { jsPDF } = window.jspdf;
+      const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+      const sortedFlights = Object.entries(flights).sort((a, b) => (a[1].name || '').localeCompare(b[1].name || '', 'de', { numeric: true }));
+      for (let i = 0; i < sortedFlights.length; i++) {
+        const [, f] = sortedFlights[i];
+        if (i > 0) doc.addPage();
+        const link = `${baseUrl}?m=${f.token}`;
+        const qrDataUrl = await window.QRCode.toDataURL(link, { width: 500, margin: 1 });
+
+        doc.setFontSize(24);
+        doc.setFont(undefined, 'bold');
+        doc.text(f.name, 105, 30, { align: 'center' });
+
+        doc.setFontSize(14);
+        doc.setFont(undefined, 'normal');
+        const playerNames = (f.playerIds || []).map(pid => players[pid]?.name).filter(Boolean);
+        let y = 45;
+        playerNames.forEach(pname => {
+          doc.text(pname, 105, y, { align: 'center' });
+          y += 8;
+        });
+
+        doc.addImage(qrDataUrl, 'PNG', 65, y + 8, 80, 80);
+
+        doc.setFontSize(12);
+        doc.setTextColor(120);
+        doc.text('QR-Code scannen, dann Passwort eingeben:', 105, y + 96, { align: 'center' });
+        doc.setFontSize(20);
+        doc.setFont(undefined, 'bold');
+        doc.setTextColor(0);
+        doc.text(`PIN: ${f.password}`, 105, y + 108, { align: 'center' });
+      }
+      doc.save(`${(meta.name || 'Turnier').replace(/[^a-zA-Z0-9äöüÄÖÜß ]/g, '')}-Flight-Links.pdf`);
+    } catch (e) {
+      alert('PDF-Erstellung fehlgeschlagen: ' + e.message);
+    }
+    setPdfGenerating(false);
+  };
 
   // Automatische Flight-Bildung (optional) – Kandidaten sind alle noch nicht zugeteilten Spieler,
   // entweder nach Handicap sortiert (z. B. Samstag-Start) oder nach der aktuellen Rangliste einer
@@ -1262,6 +1333,14 @@ function FlightAdmin({ tournament, reload }) {
         <div style={{ fontSize: 11, color: C.muted, marginTop: 6 }}>Diesen Link könnt ihr frei verteilen (Website, WhatsApp, Aushang) – er zeigt nur die Rangliste, ohne Admin-Zugang oder Eingabemöglichkeit.</div>
       </div>
 
+      {Object.keys(flights).length > 0 && (
+        <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20 }}>
+          <div style={{ fontSize: 13, color: C.inkDim, marginBottom: 6 }}>Flight-Übersicht als PDF (zum Aushängen/Ausdrucken)</div>
+          <div style={{ fontSize: 11, color: C.muted, marginBottom: 10 }}>Eine Seite pro Flight mit Flight-Name, Spielernamen, QR-Code zum Link und PIN darunter – praktisch für Spieler, deren Handynummer ihr nicht habt: Zettel abholen, QR-Code scannen, Passwort eintippen, fertig.</div>
+          <button onClick={generateFlightsPDF} disabled={pdfGenerating} style={{ ...smallBtn, opacity: pdfGenerating ? 0.6 : 1 }}>{pdfGenerating ? 'PDF wird erstellt…' : `PDF mit allen ${Object.keys(flights).length} Flights herunterladen`}</button>
+        </div>
+      )}
+
       <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20 }}>
         <div style={{ fontSize: 13, color: C.inkDim, marginBottom: 10 }}>Neuen Flight anlegen</div>
         <input placeholder="Flight-Name (z. B. Flight 1)" value={name} onChange={e => setName(e.target.value)} style={{ ...inputStyle, marginBottom: 10 }} />
@@ -1352,7 +1431,7 @@ function FlightAdmin({ tournament, reload }) {
                 {baseUrl}?m={f.token}
               </div>
               <div style={{ fontSize: 12, color: C.inkDim, marginTop: 4, marginBottom: 8 }}>Passwort: <b>{f.password}</b></div>
-              <FlightShareButtons flightName={f.name} link={`${baseUrl}?m=${f.token}`} password={f.password} />
+              <FlightShareButtons flightName={f.name} link={`${baseUrl}?m=${f.token}`} password={f.password} tournamentName={meta.name} publicLink={`${baseUrl}?public=1`} />
             </div>
           )
         ))}
@@ -1648,11 +1727,12 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
   return (
     <div className="wrap" style={{ maxWidth: 620 }}>
       {myFlightToken && !publicOnly && (
-        <a href={`?m=${myFlightToken}`} style={{
-          display: 'block', textAlign: 'center', padding: '13px 0', marginBottom: 12,
-          background: C.ink, color: '#fff', borderRadius: 10, fontSize: 15, fontWeight: 600, textDecoration: 'none'
+        <a href={`?m=${myFlightToken}`} target="_blank" rel="noopener noreferrer" style={{
+          display: 'block', textAlign: 'center', padding: '20px 0', marginBottom: 16,
+          background: C.ink, color: '#fff', borderRadius: 14, fontSize: 20, fontWeight: 700, textDecoration: 'none',
+          boxShadow: '0 4px 14px rgba(0,0,0,0.18)', letterSpacing: '0.01em'
         }}>
-          ← Zurück zur Scorekarte
+          ← Zur Scorekarte
         </a>
       )}
       <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, overflow: 'visible' }}>
@@ -1986,11 +2066,12 @@ function SoloEntry({ tournament, flightId, reload }) {
 
   return (
     <div className="wrap" style={{ maxWidth: 380 }}>
-      <a href={window.location.pathname} style={{
-        display: 'block', textAlign: 'center', padding: '13px 0', marginBottom: 12,
-        background: C.ink, color: '#fff', borderRadius: 10, fontSize: 15, fontWeight: 600, textDecoration: 'none'
+      <a href={window.location.pathname} target="_blank" rel="noopener noreferrer" style={{
+        display: 'block', textAlign: 'center', padding: '20px 0', marginBottom: 16,
+        background: C.ink, color: '#fff', borderRadius: 14, fontSize: 20, fontWeight: 700, textDecoration: 'none',
+        boxShadow: '0 4px 14px rgba(0,0,0,0.18)', letterSpacing: '0.01em'
       }}>
-        Live-Rangliste ansehen →
+        Zum Live-Scoring →
       </a>
       <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 16, overflow: 'hidden' }}>
         <div style={{ padding: '14px 18px', borderBottom: `1px solid ${C.line}`, textAlign: 'center' }}>
@@ -2050,6 +2131,7 @@ function SoloEntry({ tournament, flightId, reload }) {
                 </div>
               );
             }
+            const isNettoCMPlayer = (p.classes && p.classes[0] === NETTO_CM_ID) || p.nettoCM;
             return (
               <div key={p.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', background: C.board, borderRadius: 8 }}>
                 <div>
@@ -2067,7 +2149,9 @@ function SoloEntry({ tournament, flightId, reload }) {
                       <button onClick={() => setScore(p.id, Math.max(1, cur - 1))} style={smallCircleBtn}>−</button>
                       <span style={{ fontSize: 18, fontWeight: 600, minWidth: 20, textAlign: 'center' }}>{cur}</span>
                       <button onClick={() => setScore(p.id, cur + 1)} style={smallCircleBtn}>+</button>
-                      <button onClick={() => { if (window.confirm(`${p.name}: Loch ${hole} wirklich als Strich (aufgegeben, 0 Punkte) eintragen?`)) setScore(p.id, STRICH); }} title="Loch aufgeben" style={{ ...smallBtn, padding: '5px 8px', fontSize: 11, color: C.muted, marginLeft: 4 }}>Strich</button>
+                      {isNettoCMPlayer && (
+                        <button onClick={() => { if (window.confirm(`${p.name}: Loch ${hole} wirklich als Strich (aufgegeben, 0 Punkte) eintragen?`)) setScore(p.id, STRICH); }} title="Loch aufgeben" style={{ ...smallBtn, padding: '5px 8px', fontSize: 11, color: C.muted, marginLeft: 4 }}>Strich</button>
+                      )}
                     </>
                   )}
                 </div>
