@@ -97,11 +97,11 @@ const TOURNAMENT_TYPES = [
   { id: 'ryder_cup', label: 'Ryder Cup (nur Label)' },
 ];
 const FIXED_CLASSES = ['Herren', 'Damen', 'AK30', 'AK50', 'AK65', 'Jugend'];
-// Netto-Klubmeisterschaft ist eine eigene, exklusive Anmeldung: wählbar wie jede andere Klasse,
+// Netto-Clubmeisterschaft ist eine eigene, exklusive Anmeldung: wählbar wie jede andere Klasse,
 // aber wer hier registriert ist, zählt in KEINER anderen Klasse (Herren/Damen/AK/Jugend) mit.
 const NETTO_CM_ID = 'NettoCM';
-const NETTO_CM_LABEL = 'Netto-Klubmeisterschaft';
-// Für Dropdowns bei der Spieleranlage: alle festen Klassen plus Netto-Klubmeisterschaft als Option.
+const NETTO_CM_LABEL = 'Netto-Clubmeisterschaft';
+// Für Dropdowns bei der Spieleranlage: alle festen Klassen plus Netto-Clubmeisterschaft als Option.
 const PLAYER_CLASS_OPTIONS = [...FIXED_CLASSES, NETTO_CM_ID];
 const HCP_LETTERS = ['A', 'B', 'C', 'D'];
 // Alle vier Tees teilen sich dieselbe Par-/Index-Karte, nur CR und Slope unterscheiden sich –
@@ -135,13 +135,17 @@ const AK_MIN_AGE = { AK30: 30, AK50: 50, AK65: 65 };
 const JUGEND_MAX_AGE = 18; // unter 18 automatisch Jugend, unabhängig von der sonst registrierten Klasse
 const TOURNAMENT_YEAR = new Date().getFullYear();
 
-// Abschlag ist eine feste Regel, keine Einstellung: nur "Herren" spielt von Weiß. Alles andere
-// bei Männern (AK30/50/65, Jugend) spielt von Gelb, alles bei Frauen (Damen, AK, Jugend) von Rot –
-// unabhängig von der genauen Klasse. Betrifft nur die Anzeige, keine Berechnung (Par/Index sind für
-// alle Tees identisch).
-function classTeeForPlayer(meta, cls, geschlecht) {
-  if (cls === 'Herren') return 'Weiß';
-  return geschlecht === 'w' ? 'Rot' : 'Gelb';
+// Ermittelt den tatsächlichen Abschlag eines Spielers IMMER live aus Klasse + Geschlecht + Netto-CM-
+// Status – nie aus einem gespeicherten Feld, damit er nie veraltet sein kann. Feste Regel: nur
+// "Herren" spielt von Weiß. Netto-Clubmeisterschaft (wie auch AK30/50/65, Jugend) spielt bei Männern
+// immer Gelb, bei Frauen immer Rot – unabhängig davon, was früher mal gespeichert wurde. Betrifft
+// nur die Anzeige/Vorgabenberechnung (Par/Index sind für alle Tees identisch, nur CR/Slope unterscheiden sich).
+function effectiveTeeFor(p) {
+  const base = p.classes && p.classes[0];
+  const isWoman = p.geschlecht === 'w';
+  if (base === NETTO_CM_ID || p.nettoCM) return isWoman ? 'Rot' : 'Gelb';
+  if (base === 'Herren') return 'Weiß';
+  return isWoman ? 'Rot' : 'Gelb';
 }
 
 // Errechnet aus der registrierten Klasse + Geburtsjahr alle (nach Geschlecht getrennten) Tab-IDs,
@@ -152,11 +156,11 @@ function classTeeForPlayer(meta, cls, geschlecht) {
 // JEDE Frau zählt immer automatisch in "Damen" mit, unabhängig von der registrierten Klasse
 // (gemeinsames Tee Rot bei allen Frauen) – plus alle AK-Damen-Klassen, für die ihr Alter reicht.
 // "Jugend" wird zusätzlich IMMER automatisch anhand des Geburtsjahrs ergänzt (unter 18).
-// Netto-Klubmeisterschaft-Teilnehmer (nettoCM) sind eine Alternative, keine Zusatzwertung – sie
+// Netto-Clubmeisterschaft-Teilnehmer (nettoCM) sind eine Alternative, keine Zusatzwertung – sie
 // erscheinen in KEINER der übrigen Klassen (Herren/Damen/AK/Jugend), egal welches Alter/Geschlecht.
 function effectiveClassesFor(p) {
   const base = p.classes && p.classes[0];
-  // Netto-Klubmeisterschaft-Teilnehmer zählen ausschließlich dort – unabhängig von Alter oder
+  // Netto-Clubmeisterschaft-Teilnehmer zählen ausschließlich dort – unabhängig von Alter oder
   // Geschlecht nicht zusätzlich in Herren/Damen/AK/Jugend gelistet (Alternative, keine Zusatzwertung).
   // Erkennung primär über die registrierte Klasse selbst; p.nettoCM bleibt als Fallback für ältere
   // Einträge, die noch über die frühere separate Checkbox gesetzt wurden.
@@ -747,12 +751,12 @@ function PlayerAdmin({ tournament, reload }) {
   // Tee wird automatisch aus Geschlecht + Klasse abgeleitet. Bei fester Klassifizierung
   // (Clubmeisterschaft) gilt: AK-Klassen immer nach Geschlecht (Gelb/Rot), Herren/Damen/Jugend
   // nach der Klassen-Konfiguration. Bei Klubturnieren zählt die allgemeine Herren/Damen-Einstellung.
-  // Netto-Klubmeisterschaft-Teilnehmer bekommen IMMER Gelb (Herren) / Rot (Damen), unabhängig von
+  // Netto-Clubmeisterschaft-Teilnehmer bekommen IMMER Gelb (Herren) / Rot (Damen), unabhängig von
   // der sonst registrierten Klasse – nie Weiß oder Blau.
   const teeForGeschlecht = (g, selectedClass, isNettoCM) => {
-    if (isNettoCM) return g === 'w' ? 'Rot' : 'Gelb';
+    if (isNettoCM || selectedClass === NETTO_CM_ID) return g === 'w' ? 'Rot' : 'Gelb';
     if (meta.classificationMode === 'fixed' && selectedClass) {
-      return classTeeForPlayer(meta, selectedClass, g);
+      return effectiveTeeFor({ classes: [selectedClass], geschlecht: g });
     }
     return g === 'w' ? (meta.damenTee || 'Rot') : (meta.herrenTee || 'Weiß');
   };
@@ -783,7 +787,7 @@ function PlayerAdmin({ tournament, reload }) {
   const startEdit = (id, p) => {
     setEditingId(id);
     // Rückwärtskompatibilität: ältere Einträge, die noch über die frühere separate Checkbox als
-    // Netto-Klubmeisterschaft markiert wurden, zeigen beim Bearbeiten jetzt korrekt die neue
+    // Netto-Clubmeisterschaft markiert wurden, zeigen beim Bearbeiten jetzt korrekt die neue
     // Dropdown-Auswahl – beim Speichern wird das dann sauber auf das neue Format normalisiert.
     const initialCls = p.nettoCM ? NETTO_CM_ID : ((p.classes && p.classes[0]) || (meta.classificationMode === 'fixed' ? FIXED_CLASSES[0] : ''));
     setEditDraft({ name: p.name, hcp: String(p.hcp), cls: initialCls, geschlecht: p.geschlecht || 'm', geburtsjahr: p.geburtsjahr || '' });
@@ -830,7 +834,7 @@ function PlayerAdmin({ tournament, reload }) {
     const updates = {};
     Object.entries(players).forEach(([id, p]) => {
       const cls = p.classes && p.classes[0];
-      const correctTee = teeForGeschlecht(p.geschlecht, cls, p.nettoCM);
+      const correctTee = effectiveTeeFor(p);
       if (p.tee !== correctTee) updates[id] = { tee: correctTee };
     });
     if (Object.keys(updates).length === 0) return;
@@ -986,7 +990,7 @@ function PlayerAdmin({ tournament, reload }) {
               <div>
                 <span style={{ fontSize: 14, fontWeight: 500 }}>{p.name}</span>
                 <span style={{ fontSize: 12, color: C.muted, marginLeft: 8 }}>
-                  Hcp {p.hcp} · {p.geschlecht === 'w' ? 'Dame' : 'Herr'}{p.geburtsjahr ? ` · *${p.geburtsjahr}` : ''} · Tee {p.tee || teeForGeschlecht(p.geschlecht, p.classes && p.classes[0], p.nettoCM)}
+                  Hcp {p.hcp} · {p.geschlecht === 'w' ? 'Dame' : 'Herr'}{p.geburtsjahr ? ` · *${p.geburtsjahr}` : ''} · Tee {effectiveTeeFor(p)}
                   {meta.classificationMode === 'fixed' ? ` · ${effectiveClassesFor(p).join(', ') || '–'}` : (p.classes && p.classes.length ? '· ' + p.classes.join(', ') : '')}
                   {p.nettoCM ? ' · Netto-CM' : ''}
                 </span>
@@ -1555,16 +1559,16 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
     // Wertungsklasse) – nur Spieler mit explizitem Opt-in (p.nettoCM) zählen mit, nicht automatisch
     // jeder, der irgendwo einen Score einträgt.
     const isNettoCMPlayer = (p.classes && p.classes[0] === NETTO_CM_ID) || p.nettoCM;
-    const cmNettoRaw = (showNettoCM && isNettoCMPlayer) ? stablefordTotalsAcrossRounds(id, p.hcp, p.tee, classRounds).netPts : null;
+    const cmNettoRaw = (showNettoCM && isNettoCMPlayer) ? stablefordTotalsAcrossRounds(id, p.hcp, effectiveTeeFor(p), classRounds).netPts : null;
     const cmNettoBaselineRow = classRounds.length * m.holes * 2;
     const cmNettoDiff = cmNettoRaw === null ? null : cmNettoRaw - cmNettoBaselineRow;
     if (isStableford) {
-      const { grossPts, netPts, gbe } = stablefordTotalsAcrossRounds(id, p.hcp, p.tee, classRounds);
+      const { grossPts, netPts, gbe } = stablefordTotalsAcrossRounds(id, p.hcp, effectiveTeeFor(p), classRounds);
       return { id, ...p, effClasses, grossPts, netPts, gbe, cmNettoRaw, cmNettoDiff, thru: holesPlayed(thruScores) };
     }
     const { gross, par } = totalsAcrossRounds(id, classRounds);
     const grossToPar = gross === null ? null : gross - par;
-    const net = gross === null ? null : Math.round(gross - courseHandicapFor(p.hcp, p.tee, m.holes));
+    const net = gross === null ? null : Math.round(gross - courseHandicapFor(p.hcp, effectiveTeeFor(p), m.holes));
     const netToPar = net === null ? null : net - par;
     return { id, ...p, effClasses, gross, grossToPar, net, netToPar, cmNettoRaw, cmNettoDiff, thru: holesPlayed(thruScores) };
   });
@@ -1771,7 +1775,7 @@ function ScoreDetailModal({ tournament, playerId, initialRound, findPlayerRoundS
   const { pars, si } = courseFor(holes);
   // Tee-richtige Spielvorgabe (Course Handicap) einmal berechnen, aus dem rohen Handicap-Index
   // + Tee des Spielers – offizielle WHS-Formel, siehe courseHandicapFor.
-  const courseHcp = courseHandicapFor(p.hcp, p.tee, holes);
+  const courseHcp = courseHandicapFor(p.hcp, effectiveTeeFor(p), holes);
 
   // Gesamtstand über alle Runden der Klasse, damit er oben neben dem Namen angezeigt werden kann.
   const totalDisplay = (() => {
@@ -1876,7 +1880,7 @@ function ScoreDetailModal({ tournament, playerId, initialRound, findPlayerRoundS
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
               <span style={{ fontSize: 16, fontWeight: 600 }}>{lastNameFirst(p.name)}</span>
-              <span style={{ fontSize: 12, fontWeight: 400, color: C.muted }}>(Hcp {p.hcp} · Vorgabe {courseHcp > 0 ? '+' : ''}{courseHcp} {p.tee})</span>
+              <span style={{ fontSize: 12, fontWeight: 400, color: C.muted }}>(Hcp {p.hcp} · Vorgabe {courseHcp > 0 ? '+' : ''}{courseHcp} {effectiveTeeFor(p)})</span>
               {totalDisplay && (
                 <span style={{ fontSize: 17, fontWeight: 700, color: totalDisplay.color, marginLeft: 2 }}>{totalDisplay.text}</span>
               )}
@@ -2040,7 +2044,7 @@ function SoloEntry({ tournament, flightId, reload }) {
                 <div key={p.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', background: C.board, borderRadius: 8, opacity: 0.6 }}>
                   <div>
                     <div style={{ fontSize: 13, fontWeight: 500 }}>{p.name}</div>
-                    <div style={{ fontSize: 10, color: C.muted }}>Hcp {p.hcp} · Tee {p.tee || TEE_IDS[0]}</div>
+                    <div style={{ fontSize: 10, color: C.muted }}>Hcp {p.hcp} · Tee {effectiveTeeFor(p)}</div>
                   </div>
                   <span style={{ fontSize: 11, color: C.muted }}>🔒 vorherige Runde noch offen</span>
                 </div>
@@ -2050,7 +2054,7 @@ function SoloEntry({ tournament, flightId, reload }) {
               <div key={p.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', background: C.board, borderRadius: 8 }}>
                 <div>
                   <div style={{ fontSize: 13, fontWeight: 500 }}>{p.name}</div>
-                  <div style={{ fontSize: 10, color: C.muted }}>Hcp {p.hcp} · Tee {p.tee || TEE_IDS[0]} · Vorg. {playerSi}</div>
+                  <div style={{ fontSize: 10, color: C.muted }}>Hcp {p.hcp} · Tee {effectiveTeeFor(p)} · Vorg. {playerSi}</div>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   {struck ? (
