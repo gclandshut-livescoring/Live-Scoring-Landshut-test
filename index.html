@@ -443,7 +443,8 @@ function AdminDashboard({ tournament, reload }) {
 
 function AdminScoreEntry({ tournament, reload }) {
   const flights = tournament.flights || {};
-  const flightIds = Object.keys(flights);
+  // Alphabetisch/numerisch sortiert (z. B. "AK Herren 10:00" vor "AK Herren 10:40"), leichter zu finden.
+  const flightIds = Object.keys(flights).sort((a, b) => (flights[a].name || '').localeCompare(flights[b].name || '', 'de', { numeric: true }));
   const [selectedFlightId, setSelectedFlightId] = useState(flightIds[0] || null);
 
   if (flightIds.length === 0) {
@@ -1057,7 +1058,7 @@ function FlightShareButtons({ flightName, link, password, tournamentName, public
   // Onboarding-Nachricht nach Walters Vorlage, ergänzt um Link/Passwort zur Eingabe und den
   // Zuschauer-Link zur Live-Rangliste.
   const lines = [
-    `Guten Morgen, willkommen bei der${tournamentName ? ` ${tournamentName}` : ''}!`,
+    `Willkommen bei der${tournamentName ? ` ${tournamentName}` : ''}!`,
     `In diesem Jahr haben wir erstmalig ein Live-Scoring.`,
     ``,
     `Ein Spieler des Flights kann mit diesem Link die Scores eingeben:`,
@@ -1182,9 +1183,29 @@ function FlightAdmin({ tournament, reload }) {
         document.head.appendChild(s);
       });
       if (!window.jspdf) await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js');
-      if (!window.QRCode) await loadScript('https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js');
       if (!window.jspdf) throw new Error('PDF-Bibliothek (jsPDF) konnte nicht geladen werden.');
-      if (!window.QRCode) throw new Error('QR-Code-Bibliothek konnte nicht geladen werden.');
+      // QR-Bibliothek mit zwei CDN-Versuchen, danach Fallback auf eine öffentliche QR-Code-Bild-API,
+      // damit ein einzelner CDN-Ausfall die PDF-Erstellung nicht komplett blockiert.
+      if (!window.QRCode) {
+        try { await loadScript('https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js'); } catch (e) { /* weiter zum nächsten Versuch */ }
+      }
+      if (!window.QRCode) {
+        try { await loadScript('https://unpkg.com/qrcode/build/qrcode.min.js'); } catch (e) { /* weiter zum Bild-API-Fallback */ }
+      }
+      const getQrDataUrl = async (link) => {
+        if (window.QRCode) {
+          try { return await window.QRCode.toDataURL(link, { width: 500, margin: 1 }); } catch (e) { /* weiter zum Bild-API-Fallback */ }
+        }
+        const res = await fetch(`https://api.qrserver.com/v1/create-qr-code/?size=500x500&data=${encodeURIComponent(link)}`);
+        if (!res.ok) throw new Error('QR-Code konnte weder über die Bibliothek noch über die Bild-API erzeugt werden.');
+        const blob = await res.blob();
+        return await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = () => reject(new Error('QR-Code-Bild konnte nicht gelesen werden.'));
+          reader.readAsDataURL(blob);
+        });
+      };
 
       const { jsPDF } = window.jspdf;
       const doc = new jsPDF({ unit: 'mm', format: 'a4' });
@@ -1193,7 +1214,7 @@ function FlightAdmin({ tournament, reload }) {
         const [, f] = sortedFlights[i];
         if (i > 0) doc.addPage();
         const link = `${baseUrl}?m=${f.token}`;
-        const qrDataUrl = await window.QRCode.toDataURL(link, { width: 500, margin: 1 });
+        const qrDataUrl = await getQrDataUrl(link);
 
         doc.setFontSize(24);
         doc.setFont(undefined, 'bold');
