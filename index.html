@@ -13,8 +13,6 @@
 <script src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js" crossorigin></script>
 <script src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
 <script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7/babel.min.js" crossorigin></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
 <style>
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; background: #f2efe5; }
@@ -1170,12 +1168,24 @@ function FlightAdmin({ tournament, reload }) {
   // am Sekretariat auslegen, Spieler scannen den QR-Code selbst und tippen das Passwort ein.
   const [pdfGenerating, setPdfGenerating] = useState(false);
   const generateFlightsPDF = async () => {
-    if (!window.jspdf || !window.QRCode) {
-      alert('PDF-Bibliothek konnte nicht geladen werden. Bitte Internetverbindung prüfen und Seite neu laden.');
-      return;
-    }
     setPdfGenerating(true);
     try {
+      // Bibliotheken erst jetzt gezielt nachladen (statt blockierend beim Seitenaufbau) – mit klarer
+      // Fehlermeldung, welche der beiden genau fehlschlägt, falls doch mal ein Netzwerkproblem auftritt.
+      const loadScript = (src) => new Promise((resolve, reject) => {
+        if (document.querySelector(`script[data-dynsrc="${src}"]`)) { resolve(); return; }
+        const s = document.createElement('script');
+        s.src = src;
+        s.dataset.dynsrc = src;
+        s.onload = () => resolve();
+        s.onerror = () => reject(new Error('Konnte nicht geladen werden: ' + src));
+        document.head.appendChild(s);
+      });
+      if (!window.jspdf) await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js');
+      if (!window.QRCode) await loadScript('https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js');
+      if (!window.jspdf) throw new Error('PDF-Bibliothek (jsPDF) konnte nicht geladen werden.');
+      if (!window.QRCode) throw new Error('QR-Code-Bibliothek konnte nicht geladen werden.');
+
       const { jsPDF } = window.jspdf;
       const doc = new jsPDF({ unit: 'mm', format: 'a4' });
       const sortedFlights = Object.entries(flights).sort((a, b) => (a[1].name || '').localeCompare(b[1].name || '', 'de', { numeric: true }));
