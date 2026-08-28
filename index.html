@@ -279,12 +279,18 @@ function stablefordPoints(diff) {
   return Math.max(0, 2 - diff);
 }
 
-// Zeigt den Nachnamen zuerst an (nimmt an, dass das letzte Wort der Nachname ist) – rein
-// für die Anzeige in der Live-Rangliste, die gespeicherten Namen bleiben unverändert.
+// Zeigt den Nachnamen zuerst an – rein für die Anzeige in der Live-Rangliste, die gespeicherten
+// Namen bleiben unverändert. Erkennt zwei Eingabeformate: Ist der Name schon als "Nachname, Vorname"
+// eingetragen (z. B. aus einer kopierten Liste), wird nur das Komma entfernt (schon richtig sortiert).
+// Bei einfachem "Vorname Nachname" ohne Komma wird das letzte Wort als Nachname nach vorne gestellt.
 function lastNameFirst(fullName) {
   if (!fullName) return fullName;
-  const parts = fullName.trim().split(/\s+/);
-  if (parts.length < 2) return fullName;
+  const trimmed = fullName.trim();
+  if (trimmed.includes(',')) {
+    return trimmed.split(',').map(s => s.trim()).filter(Boolean).join(' ');
+  }
+  const parts = trimmed.split(/\s+/);
+  if (parts.length < 2) return trimmed;
   const last = parts[parts.length - 1];
   const first = parts.slice(0, -1).join(' ');
   return `${last} ${first}`;
@@ -1915,7 +1921,6 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
                 <span style={{ fontSize: 13, color: C.muted, width: 18, fontWeight: 600 }}>{i + 1}</span>
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: 7 }}>
                   <span style={{ fontSize: tier ? tier.size : 15, fontWeight: tier ? tier.weight : 500, color: tier ? tier.color : C.ink }}>{lastNameFirst(r.name)}{isStableford && activeHcpClass && r.id === bruttoLeaderIdFor(r.geschlecht) ? ' 🏆' : ''}</span>
-                  <span style={{ fontSize: 11, color: C.muted }}>Hcp {r.hcp}</span>
                 </div>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 18 }}>
@@ -2086,7 +2091,7 @@ function ScoreDetailModal({ tournament, playerId, initialRound, findPlayerRoundS
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
               <span style={{ fontSize: 16, fontWeight: 600 }}>{lastNameFirst(p.name)}</span>
-              <span style={{ fontSize: 12, fontWeight: 400, color: C.muted }}>(Hcp {p.hcp} · Vorgabe {courseHcp > 0 ? '+' : ''}{courseHcp} {effectiveTeeFor(p)})</span>
+              <span style={{ fontSize: 12, fontWeight: 400, color: C.muted }}>{p.hcp} ({courseHcp > 0 ? '+' : ''}{courseHcp})</span>
               {totalDisplay && (
                 <span style={{ fontSize: 17, fontWeight: 700, color: totalDisplay.color, marginLeft: 2 }}>{totalDisplay.text}</span>
               )}
