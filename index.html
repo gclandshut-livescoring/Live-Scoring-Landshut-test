@@ -98,15 +98,29 @@ const TOURNAMENT_TYPES = [
 ];
 const FIXED_CLASSES = ['Herren', 'Damen', 'AK30', 'AK50', 'AK65', 'Jugend'];
 const HCP_LETTERS = ['A', 'B', 'C', 'D'];
-// Alle vier Tees teilen sich dieselbe Par-/Index-Karte, nur der CR-Wert unterscheidet sich
-// (die daraus resultierende Vorgabe kommt bereits fertig aus der Startliste pro Spieler).
+// Alle vier Tees teilen sich dieselbe Par-/Index-Karte, nur CR und Slope unterscheiden sich –
+// daraus errechnet sich pro Tee die tatsächliche Spielvorgabe (Course Handicap) aus dem
+// eingetragenen Handicap-Index (siehe courseHandicapFor unten, offizielle WHS-Formel).
 const TEES = [
-  { id: 'Weiß', cr: '72.8' },
-  { id: 'Gelb', cr: '71.1' },
-  { id: 'Blau', cr: '74.5' },
-  { id: 'Rot', cr: '72.4' },
+  { id: 'Weiß', cr: 72.8, slope: 131 },
+  { id: 'Gelb', cr: 71.1, slope: 130 },
+  { id: 'Blau', cr: 74.5, slope: 128 },
+  { id: 'Rot', cr: 72.4, slope: 125 },
 ];
 const TEE_IDS = TEES.map(t => t.id);
+const COURSE_PAR_18 = 73; // Gesamt-Par lt. Scorecard GC Landshut
+
+// Rechnet den eingetragenen Handicap-Index (aus der Vorgabenliste, tee-unabhängig) in die
+// tatsächliche Spielvorgabe für ein bestimmtes Tee um: Vorgabe = HCPI × (Slope/113) + (CR − Par).
+// Offizielle WHS-Formel, auf ganze Zahl gerundet. Fällt auf den Index selbst zurück, falls das
+// Tee unbekannt ist.
+function courseHandicapFor(hcpi, tee, holes) {
+  const rating = TEES.find(t => t.id === tee);
+  if (!rating || hcpi === null || hcpi === undefined || hcpi === '') return Number(hcpi) || 0;
+  const par = holes === 9 ? COURSE_PAR_18 / 2 : COURSE_PAR_18;
+  const raw = Number(hcpi) * (rating.slope / 113) + (rating.cr - par);
+  return Math.round(raw);
+}
 
 // Altersklassen-Grenzen (Mindestalter, überlappend): wer 65 ist, qualifiziert sich automatisch
 // auch für AK50 und AK30. Herren/Damen sind davon ausgenommen (kein Alterskriterium, eigenes Tee).
@@ -1270,7 +1284,7 @@ function FlightAdmin({ tournament, reload }) {
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {Object.entries(flights).map(([id, f]) => (
+        {Object.entries(flights).sort((a, b) => (a[1].name || '').localeCompare(b[1].name || '', 'de', { numeric: true })).map(([id, f]) => (
           editingFlightId === id ? (
             <div key={id} style={{ background: C.card, border: `1px solid ${C.ink}`, borderRadius: 12, padding: 16 }}>
               <input value={editName} onChange={e => setEditName(e.target.value)} style={{ ...inputStyle, marginBottom: 10 }} />
@@ -1490,6 +1504,7 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
   // Stableford: Brutto- und Netto-Punkte pro Loch aufsummiert, Strich = 0 Punkte für beide.
   // GBE (Zählspielschläge) bleibt "unvollständig", sobald ein Strich vorkommt.
   const stablefordTotalsAcrossRounds = (playerId, hcp, tee, roundList) => {
+    const courseHcp = courseHandicapFor(hcp, tee, m.holes);
     let grossPts = 0, netPts = 0, gbe = 0, played = false, strich = false;
     (roundList || m.rounds || []).forEach(r => {
       const s = findPlayerRoundScores(playerId, r.id);
@@ -1507,7 +1522,7 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
         const score = Number(val);
         gbe += score;
         grossPts += stablefordPoints(score - par);
-        const net = score - strokesOnHole(hcp, si, m.holes);
+        const net = score - strokesOnHole(courseHcp, si, m.holes);
         netPts += stablefordPoints(net - par);
       });
     });
@@ -1539,7 +1554,7 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
     }
     const { gross, par } = totalsAcrossRounds(id, classRounds);
     const grossToPar = gross === null ? null : gross - par;
-    const net = gross === null ? null : Math.round(gross - p.hcp);
+    const net = gross === null ? null : Math.round(gross - courseHandicapFor(p.hcp, p.tee, m.holes));
     const netToPar = net === null ? null : net - par;
     return { id, ...p, effClasses, gross, grossToPar, net, netToPar, cmNettoRaw, cmNettoDiff, thru: holesPlayed(thruScores) };
   });
@@ -1568,8 +1583,11 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
 
   let visibleRows;
   if (activeClass === NETTO_CM_ID) {
-    // Netto-Clubmeisterschaft: eine einzige kombinierte Wertung über alle Teilnehmer, unabhängig von Klasse.
-    visibleRows = rows.filter(r => r.cmNettoDiff !== null);
+    // Netto-Clubmeisterschaft: eine einzige kombinierte Wertung über alle angemeldeten Teilnehmer.
+    // Wichtig: auch Spieler ohne bisherigen Score anzeigen (mit "PAR"-Platzhalter), genau wie bei
+    // den anderen Klassen-Tabs – sonst verschwindet die ganze Wertung, solange noch niemand
+    // gespielt hat (der eigentliche Bug: vorher wurden Spieler ohne Score komplett ausgeblendet).
+    visibleRows = rows.filter(r => r.nettoCM);
     visibleRows.sort((a, b) => (b.cmNettoDiff ?? -999) - (a.cmNettoDiff ?? -999));
   } else if (m.classificationMode === 'fixed') {
     // Feste Klassen (Herren/Damen/AK/Jugend) entscheiden nach Brutto. Ein Spieler kann dank
@@ -1741,6 +1759,9 @@ function ScoreDetailModal({ tournament, playerId, initialRound, findPlayerRoundS
   const scores = findPlayerRoundScores(playerId, round);
   const holes = m.holes;
   const { pars, si } = courseFor(holes);
+  // Tee-richtige Spielvorgabe (Course Handicap) einmal berechnen, aus dem rohen Handicap-Index
+  // + Tee des Spielers – offizielle WHS-Formel, siehe courseHandicapFor.
+  const courseHcp = courseHandicapFor(p.hcp, p.tee, holes);
 
   // Gesamtstand über alle Runden der Klasse, damit er oben neben dem Namen angezeigt werden kann.
   const totalDisplay = (() => {
@@ -1755,13 +1776,13 @@ function ScoreDetailModal({ tournament, playerId, initialRound, findPlayerRoundS
         if (val === STRICH) return;
         gross += Number(val);
         parSum += pars[hi] || 0;
-        const net = Number(val) - strokesOnHole(p.hcp, si[hi], holes);
+        const net = Number(val) - strokesOnHole(courseHcp, si[hi], holes);
         pts += stablefordPoints(net - pars[hi]);
       });
     });
     if (!any) return null;
     if (isStbl) return { text: `${pts} Pkt.`, color: C.ink };
-    const net = Math.round(gross - p.hcp);
+    const net = Math.round(gross - courseHcp);
     const toPar = net - parSum;
     return {
       text: toPar === 0 ? 'PAR' : toPar > 0 ? '+' + toPar : String(toPar),
@@ -1793,7 +1814,7 @@ function ScoreDetailModal({ tournament, playerId, initialRound, findPlayerRoundS
       // wie sich die Nettopunkte pro Loch zusammensetzen (Vorgabe-Schlag + Punkte-Skala).
       let netPtsBadge = null;
       if (isStableford && hasScore) {
-        const strokes = strokesOnHole(p.hcp, si[i], holes);
+        const strokes = strokesOnHole(courseHcp, si[i], holes);
         const netScore = Number(s) - strokes;
         const netPts = stablefordPoints(netScore - pars[i]);
         netPtsBadge = netPts;
@@ -1845,7 +1866,7 @@ function ScoreDetailModal({ tournament, playerId, initialRound, findPlayerRoundS
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
               <span style={{ fontSize: 16, fontWeight: 600 }}>{lastNameFirst(p.name)}</span>
-              <span style={{ fontSize: 12, fontWeight: 400, color: C.muted }}>(Hcp {p.hcp})</span>
+              <span style={{ fontSize: 12, fontWeight: 400, color: C.muted }}>(Hcp {p.hcp} · Vorgabe {courseHcp > 0 ? '+' : ''}{courseHcp} {p.tee})</span>
               {totalDisplay && (
                 <span style={{ fontSize: 17, fontWeight: 700, color: totalDisplay.color, marginLeft: 2 }}>{totalDisplay.text}</span>
               )}
