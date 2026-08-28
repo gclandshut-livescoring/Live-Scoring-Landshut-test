@@ -599,6 +599,23 @@ function TournamentSetup({ tournament, reload }) {
     setResetting(false);
   };
 
+  // Runden-genauer Reset: löscht nur die Scores der ausgewählten Runde(n) über alle Flights hinweg,
+  // andere Runden bleiben unangetastet – wichtig, falls z. B. schon jemand vorschnell in Runde 2/3
+  // geklickt hat, obwohl die neuen Flights/Links dafür noch gar nicht ausgegeben wurden.
+  const [resetRounds, setResetRounds] = useState([]);
+  const toggleResetRound = (rid) => setResetRounds(sel => sel.includes(rid) ? sel.filter(x => x !== rid) : [...sel, rid]);
+  const resetSelectedRounds = async () => {
+    if (resetRounds.length === 0) return;
+    const labels = rounds.filter(r => resetRounds.includes(r.id)).map(r => r.label).join(', ');
+    if (!window.confirm(`Wirklich alle Scores für "${labels}" löschen (über alle Flights hinweg)? Andere Runden bleiben erhalten. Das kann nicht rückgängig gemacht werden.`)) return;
+    setResetting(true);
+    const flightIds = Object.keys((tournament && tournament.flights) || {});
+    await Promise.all(flightIds.flatMap(fid => resetRounds.map(rid => fbPut(`tournament/scores/${fid}/${rid}`, null))));
+    setResetRounds([]);
+    await reload();
+    setResetting(false);
+  };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div style={{ background: scoringLocked ? C.redTint : C.greenTint, border: `1px solid ${scoringLocked ? C.red : C.green}`, borderRadius: 12, padding: 20 }}>
@@ -619,6 +636,22 @@ function TournamentSetup({ tournament, reload }) {
         <div style={{ fontSize: 14, fontWeight: 600, color: C.inkDim, marginBottom: 4 }}>Alle Scores zurücksetzen</div>
         <div style={{ fontSize: 12, color: C.muted, marginBottom: 10 }}>Löscht alle bisher eingetragenen Löcher/Schläge (z. B. weil vorab zum Testen schon was eingetippt wurde). Spieler, Flights, Links und Passwörter bleiben unverändert erhalten – niemand braucht einen neuen Link.</div>
         <button onClick={resetAllScores} disabled={resetting} style={{ ...smallBtn, color: C.red, opacity: resetting ? 0.6 : 1 }}>{resetting ? 'Wird zurückgesetzt…' : 'Alle Scores löschen'}</button>
+
+        {rounds.length > 1 && (
+          <div style={{ marginTop: 16, paddingTop: 16, borderTop: `1px solid ${C.line}` }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: C.inkDim, marginBottom: 4 }}>Nur einzelne Runde(n) zurücksetzen</div>
+            <div style={{ fontSize: 12, color: C.muted, marginBottom: 10 }}>Falls schon jemand vorschnell in eine neue Runde geklickt hat, obwohl ihr die neuen Flights/Links dafür noch gar nicht ausgegeben habt – löscht nur die ausgewählte(n) Runde(n), über alle Flights hinweg, andere Runden bleiben unangetastet.</div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+              {rounds.map(r => (
+                <label key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, color: C.inkDim, background: C.board, padding: '4px 10px', borderRadius: 6 }}>
+                  <input type="checkbox" checked={resetRounds.includes(r.id)} onChange={() => toggleResetRound(r.id)} />
+                  {r.label}
+                </label>
+              ))}
+            </div>
+            <button onClick={resetSelectedRounds} disabled={resetting || resetRounds.length === 0} style={{ ...smallBtn, color: C.red, opacity: (resetting || resetRounds.length === 0) ? 0.5 : 1 }}>{resetting ? 'Wird zurückgesetzt…' : 'Ausgewählte Runde(n) löschen'}</button>
+          </div>
+        )}
       </div>
 
     <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20 }}>
@@ -1762,7 +1795,7 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
     // den anderen Klassen-Tabs – sonst verschwindet die ganze Wertung, solange noch niemand
     // gespielt hat (der eigentliche Bug: vorher wurden Spieler ohne Score komplett ausgeblendet).
     visibleRows = rows.filter(r => (r.classes && r.classes[0] === NETTO_CM_ID) || r.nettoCM);
-    visibleRows.sort((a, b) => (b.cmNettoDiff ?? -999) - (a.cmNettoDiff ?? -999));
+    visibleRows.sort((a, b) => (b.cmNettoRaw ?? -1) - (a.cmNettoRaw ?? -1));
   } else if (m.classificationMode === 'fixed') {
     // Feste Klassen (Herren/Damen/AK/Jugend) entscheiden nach Brutto. Ein Spieler kann dank
     // Alters-Mehrfachwertung in mehreren AK-Klassen gleichzeitig auftauchen (effClasses).
@@ -1882,8 +1915,8 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
               <div style={{ display: 'flex', alignItems: 'center', gap: 18 }}>
                 <div style={{ textAlign: 'center', minWidth: 54 }}>
                   {activeClass === NETTO_CM_ID ? (
-                    <div style={{ fontSize: tier ? tier.size : 16, fontWeight: tier ? tier.weight : 600, color: scoreColorFor(r.cmNettoDiff) }}>
-                      {scoreTextFor(r.cmNettoDiff)}
+                    <div style={{ fontSize: tier ? tier.size : 16, fontWeight: tier ? tier.weight : 600, color: tier ? tier.color : C.ink }}>
+                      {r.cmNettoRaw ?? 0} Pkt.
                     </div>
                   ) : isStableford ? (
                     <div style={{ fontSize: tier ? tier.size : 16, fontWeight: tier ? tier.weight : 600, color: tier ? tier.color : C.ink }}>
