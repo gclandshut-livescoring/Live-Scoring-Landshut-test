@@ -738,7 +738,10 @@ function PlayerAdmin({ tournament, reload }) {
   // Tee wird automatisch aus Geschlecht + Klasse abgeleitet. Bei fester Klassifizierung
   // (Clubmeisterschaft) gilt: AK-Klassen immer nach Geschlecht (Gelb/Rot), Herren/Damen/Jugend
   // nach der Klassen-Konfiguration. Bei Klubturnieren zählt die allgemeine Herren/Damen-Einstellung.
-  const teeForGeschlecht = (g, selectedClass) => {
+  // Netto-Klubmeisterschaft-Teilnehmer bekommen IMMER Gelb (Herren) / Rot (Damen), unabhängig von
+  // der sonst registrierten Klasse – nie Weiß oder Blau.
+  const teeForGeschlecht = (g, selectedClass, isNettoCM) => {
+    if (isNettoCM) return g === 'w' ? 'Rot' : 'Gelb';
     if (meta.classificationMode === 'fixed' && selectedClass) {
       return classTeeForPlayer(meta, selectedClass, g);
     }
@@ -754,7 +757,7 @@ function PlayerAdmin({ tournament, reload }) {
       const existing = await lookupMember(name);
       if (existing && existing.geburtsjahr) geb = existing.geburtsjahr;
     }
-    await fbPatch('tournament/players/' + id, { name, hcp: Number(hcp), classes: cls ? [cls] : [], geschlecht, geburtsjahr: geb || null, nettoCM, tee: teeForGeschlecht(geschlecht, cls) });
+    await fbPatch('tournament/players/' + id, { name, hcp: Number(hcp), classes: cls ? [cls] : [], geschlecht, geburtsjahr: geb || null, nettoCM, tee: teeForGeschlecht(geschlecht, cls, nettoCM) });
     if (geb) await upsertMember(name, geb, geschlecht);
     setName(''); setHcp(''); setGeburtsjahr(''); setNettoCM(false);
     await reload();
@@ -782,7 +785,7 @@ function PlayerAdmin({ tournament, reload }) {
       geschlecht: editDraft.geschlecht,
       geburtsjahr: editDraft.geburtsjahr || null,
       nettoCM: editDraft.nettoCM,
-      tee: teeForGeschlecht(editDraft.geschlecht, editDraft.cls),
+      tee: teeForGeschlecht(editDraft.geschlecht, editDraft.cls, editDraft.nettoCM),
     });
     if (editDraft.geburtsjahr) await upsertMember(editDraft.name, editDraft.geburtsjahr, editDraft.geschlecht);
     setEditingId(null); setEditDraft(null);
@@ -813,7 +816,7 @@ function PlayerAdmin({ tournament, reload }) {
     const updates = {};
     Object.entries(players).forEach(([id, p]) => {
       const cls = p.classes && p.classes[0];
-      const correctTee = teeForGeschlecht(p.geschlecht, cls);
+      const correctTee = teeForGeschlecht(p.geschlecht, cls, p.nettoCM);
       if (p.tee !== correctTee) updates[id] = { tee: correctTee };
     });
     if (Object.keys(updates).length === 0) return;
@@ -863,7 +866,7 @@ function PlayerAdmin({ tournament, reload }) {
           if (rec && rec.geburtsjahr) pgeb = rec.geburtsjahr;
         }
         const id = newId();
-        playerUpdates[id] = { name: pname, hcp: Number(phcp), classes: pcls ? [pcls] : [], geschlecht: pg, geburtsjahr: pgeb, nettoCM: pNettoCM, tee: teeForGeschlecht(pg, pcls) };
+        playerUpdates[id] = { name: pname, hcp: Number(phcp), classes: pcls ? [pcls] : [], geschlecht: pg, geburtsjahr: pgeb, nettoCM: pNettoCM, tee: teeForGeschlecht(pg, pcls, pNettoCM) };
         if (pgeb) memberUpserts[memberKey(pname)] = { name: pname, geburtsjahr: pgeb, geschlecht: pg };
         if (pflight) {
           if (!flightGroups[pflight]) flightGroups[pflight] = [];
@@ -976,7 +979,7 @@ function PlayerAdmin({ tournament, reload }) {
               <div>
                 <span style={{ fontSize: 14, fontWeight: 500 }}>{p.name}</span>
                 <span style={{ fontSize: 12, color: C.muted, marginLeft: 8 }}>
-                  Hcp {p.hcp} · {p.geschlecht === 'w' ? 'Dame' : 'Herr'}{p.geburtsjahr ? ` · *${p.geburtsjahr}` : ''} · Tee {p.tee || teeForGeschlecht(p.geschlecht, p.classes && p.classes[0])}
+                  Hcp {p.hcp} · {p.geschlecht === 'w' ? 'Dame' : 'Herr'}{p.geburtsjahr ? ` · *${p.geburtsjahr}` : ''} · Tee {p.tee || teeForGeschlecht(p.geschlecht, p.classes && p.classes[0], p.nettoCM)}
                   {meta.classificationMode === 'fixed' ? ` · ${effectiveClassesFor(p).join(', ') || '–'}` : (p.classes && p.classes.length ? '· ' + p.classes.join(', ') : '')}
                   {p.nettoCM ? ' · Netto-CM' : ''}
                 </span>
