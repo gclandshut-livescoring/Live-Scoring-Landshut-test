@@ -2005,8 +2005,9 @@ function ScoreDetailModal({ tournament, playerId, initialRound, findPlayerRoundS
     });
     if (!any) return null;
     if (isStbl) return { text: `${pts} Pkt.`, color: C.ink };
-    const net = Math.round(gross - courseHcp);
-    const toPar = net - parSum;
+    // Bei Zählspiel (Herren/Damen/AK/Jugend) zählt IMMER Brutto, exakt wie in der Live-Rangliste –
+    // nicht Netto. Vorher stand hier fälschlich das Netto-Ergebnis (Brutto minus Vorgabe).
+    const toPar = gross - parSum;
     return {
       text: toPar === 0 ? 'PAR' : toPar > 0 ? '+' + toPar : String(toPar),
       color: toPar === 0 ? C.muted : toPar < 0 ? C.red : C.ink,
