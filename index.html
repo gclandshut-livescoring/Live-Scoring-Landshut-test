@@ -470,7 +470,7 @@ function AdminScoreEntry({ tournament, reload }) {
           ))}
         </div>
       </div>
-      {selectedFlightId && <SoloEntry key={selectedFlightId} tournament={tournament} flightId={selectedFlightId} reload={reload} />}
+      {selectedFlightId && <SoloEntry key={selectedFlightId} tournament={tournament} flightId={selectedFlightId} reload={reload} isAdmin />}
     </div>
   );
 }
@@ -2071,15 +2071,16 @@ function ScoreDetailModal({ tournament, playerId, initialRound, findPlayerRoundS
 // ============================================================
 // SOLO SCORE ENTRY
 // ============================================================
-function SoloEntry({ tournament, flightId, reload }) {
+function SoloEntry({ tournament, flightId, reload, isAdmin }) {
   const m = tournament.meta;
   const flight = tournament.flights[flightId];
   const players = (flight.playerIds || []).map(id => ({ id, ...tournament.players[id] }));
   const allFlightScores = (tournament.scores && tournament.scores[flightId]) || {};
 
   // Scoring-Sperre: Spieler sehen bis zur Freigabe durch den Admin nur diesen Hinweis, keine
-  // Eingabemöglichkeit. Der Admin selbst ist davon nicht betroffen (nutzt den separaten "Scores"-Tab).
-  if (m.scoringLocked) {
+  // Eingabemöglichkeit. Der Admin selbst (isAdmin, aus dem "Scores"-Tab) darf die Sperre umgehen und
+  // trotzdem testen/eintragen – bekommt aber oben einen Hinweis, dass für Spieler noch gesperrt ist.
+  if (m.scoringLocked && !isAdmin) {
     return (
       <div className="wrap" style={{ maxWidth: 380, textAlign: 'center', paddingTop: '15vh' }}>
         <div style={{ fontSize: 40, marginBottom: 12 }}>🔒</div>
@@ -2159,6 +2160,11 @@ function SoloEntry({ tournament, flightId, reload }) {
 
   return (
     <div className="wrap" style={{ maxWidth: 380 }}>
+      {isAdmin && m.scoringLocked && (
+        <div style={{ background: C.redTint, border: `1px solid ${C.red}`, color: C.red, borderRadius: 10, padding: '10px 14px', marginBottom: 12, fontSize: 12, textAlign: 'center', fontWeight: 600 }}>
+          🔒 Für Spieler aktuell gesperrt – du testest hier als Admin
+        </div>
+      )}
       <a href={window.location.pathname} target="_blank" rel="noopener noreferrer" style={{
         display: 'block', textAlign: 'center', padding: '20px 0', marginBottom: 16,
         background: C.ink, color: '#fff', borderRadius: 14, fontSize: 20, fontWeight: 700, textDecoration: 'none',
