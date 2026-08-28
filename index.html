@@ -97,6 +97,12 @@ const TOURNAMENT_TYPES = [
   { id: 'ryder_cup', label: 'Ryder Cup (nur Label)' },
 ];
 const FIXED_CLASSES = ['Herren', 'Damen', 'AK30', 'AK50', 'AK65', 'Jugend'];
+// Netto-Klubmeisterschaft ist eine eigene, exklusive Anmeldung: wählbar wie jede andere Klasse,
+// aber wer hier registriert ist, zählt in KEINER anderen Klasse (Herren/Damen/AK/Jugend) mit.
+const NETTO_CM_ID = 'NettoCM';
+const NETTO_CM_LABEL = 'Netto-Klubmeisterschaft';
+// Für Dropdowns bei der Spieleranlage: alle festen Klassen plus Netto-Klubmeisterschaft als Option.
+const PLAYER_CLASS_OPTIONS = [...FIXED_CLASSES, NETTO_CM_ID];
 const HCP_LETTERS = ['A', 'B', 'C', 'D'];
 // Alle vier Tees teilen sich dieselbe Par-/Index-Karte, nur CR und Slope unterscheiden sich –
 // daraus errechnet sich pro Tee die tatsächliche Spielvorgabe (Course Handicap) aus dem
@@ -149,11 +155,13 @@ function classTeeForPlayer(meta, cls, geschlecht) {
 // Netto-Klubmeisterschaft-Teilnehmer (nettoCM) sind eine Alternative, keine Zusatzwertung – sie
 // erscheinen in KEINER der übrigen Klassen (Herren/Damen/AK/Jugend), egal welches Alter/Geschlecht.
 function effectiveClassesFor(p) {
+  const base = p.classes && p.classes[0];
   // Netto-Klubmeisterschaft-Teilnehmer zählen ausschließlich dort – unabhängig von Alter oder
   // Geschlecht nicht zusätzlich in Herren/Damen/AK/Jugend gelistet (Alternative, keine Zusatzwertung).
-  if (p.nettoCM) return [];
+  // Erkennung primär über die registrierte Klasse selbst; p.nettoCM bleibt als Fallback für ältere
+  // Einträge, die noch über die frühere separate Checkbox gesetzt wurden.
+  if (base === NETTO_CM_ID || p.nettoCM) return [];
 
-  const base = p.classes && p.classes[0];
   const isWoman = p.geschlecht === 'w';
   const age = p.geburtsjahr ? TOURNAMENT_YEAR - Number(p.geburtsjahr) : null;
   const result = new Set();
@@ -485,6 +493,7 @@ function TournamentSetup({ tournament, reload }) {
       AK50: { rounds: first2 },
       AK65: { rounds: first2 },
       Jugend: { rounds: first2, tee: 'Gelb' },
+      [NETTO_CM_ID]: { rounds: first2 }, // Tee automatisch nach Geschlecht (Gelb/Rot)
     };
   };
   const [classConfig, setClassConfig] = useState(m.classConfig || defaultClassConfig(m.rounds || [{ id: 1, label: 'Runde 1' }, { id: 2, label: 'Runde 2' }]));
@@ -629,13 +638,14 @@ function TournamentSetup({ tournament, reload }) {
         {classificationMode === 'fixed' ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             <div style={{ fontSize: 11, color: C.muted }}>Abschlag ist eine feste Regel, keine Einstellung: nur Herren spielt von Weiß. Alles andere bei Männern (AK30/50/65, Jugend) spielt von Gelb, alles bei Frauen von Rot – automatisch anhand von Geschlecht + Klasse, kein Auswahlfeld nötig.</div>
-            {FIXED_CLASSES.map(cls => {
+            {[...FIXED_CLASSES, NETTO_CM_ID].map(cls => {
               const cfg = classConfig[cls] || { rounds: [] };
               const cfgRounds = cfg.rounds || [];
               const teeNote = cls === 'Herren' ? 'Weiß' : 'Gelb (Herren) / Rot (Damen)';
+              const label = cls === NETTO_CM_ID ? NETTO_CM_LABEL : cls;
               return (
-                <div key={cls} style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', background: C.board, borderRadius: 8, padding: '8px 10px' }}>
-                  <span style={{ fontSize: 13, fontWeight: 600, color: C.inkDim, width: 60 }}>{cls}</span>
+                <div key={cls} style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', background: cls === NETTO_CM_ID ? C.accentTint : C.board, borderRadius: 8, padding: '8px 10px' }}>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: C.inkDim, width: cls === NETTO_CM_ID ? 140 : 60 }}>{label}</span>
                   <div style={{ display: 'flex', gap: 8 }}>
                     {rounds.map(r => (
                       <label key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, color: C.inkDim }}>
@@ -728,7 +738,6 @@ function PlayerAdmin({ tournament, reload }) {
   const [cls, setCls] = useState(meta.classificationMode === 'fixed' ? FIXED_CLASSES[0] : '');
   const [geschlecht, setGeschlecht] = useState('m');
   const [geburtsjahr, setGeburtsjahr] = useState('');
-  const [nettoCM, setNettoCM] = useState(false);
   const fileRef = useRef(null);
   const [editingId, setEditingId] = useState(null);
   const [editDraft, setEditDraft] = useState(null);
@@ -757,9 +766,9 @@ function PlayerAdmin({ tournament, reload }) {
       const existing = await lookupMember(name);
       if (existing && existing.geburtsjahr) geb = existing.geburtsjahr;
     }
-    await fbPatch('tournament/players/' + id, { name, hcp: Number(hcp), classes: cls ? [cls] : [], geschlecht, geburtsjahr: geb || null, nettoCM, tee: teeForGeschlecht(geschlecht, cls, nettoCM) });
+    await fbPatch('tournament/players/' + id, { name, hcp: Number(hcp), classes: cls ? [cls] : [], geschlecht, geburtsjahr: geb || null, nettoCM: cls === NETTO_CM_ID, tee: teeForGeschlecht(geschlecht, cls, cls === NETTO_CM_ID) });
     if (geb) await upsertMember(name, geb, geschlecht);
-    setName(''); setHcp(''); setGeburtsjahr(''); setNettoCM(false);
+    setName(''); setHcp(''); setGeburtsjahr('');
     await reload();
   };
 
@@ -773,19 +782,24 @@ function PlayerAdmin({ tournament, reload }) {
   // Falschangabe korrigiert werden muss.
   const startEdit = (id, p) => {
     setEditingId(id);
-    setEditDraft({ name: p.name, hcp: String(p.hcp), cls: (p.classes && p.classes[0]) || (meta.classificationMode === 'fixed' ? FIXED_CLASSES[0] : ''), geschlecht: p.geschlecht || 'm', geburtsjahr: p.geburtsjahr || '', nettoCM: !!p.nettoCM });
+    // Rückwärtskompatibilität: ältere Einträge, die noch über die frühere separate Checkbox als
+    // Netto-Klubmeisterschaft markiert wurden, zeigen beim Bearbeiten jetzt korrekt die neue
+    // Dropdown-Auswahl – beim Speichern wird das dann sauber auf das neue Format normalisiert.
+    const initialCls = p.nettoCM ? NETTO_CM_ID : ((p.classes && p.classes[0]) || (meta.classificationMode === 'fixed' ? FIXED_CLASSES[0] : ''));
+    setEditDraft({ name: p.name, hcp: String(p.hcp), cls: initialCls, geschlecht: p.geschlecht || 'm', geburtsjahr: p.geburtsjahr || '' });
   };
   const cancelEdit = () => { setEditingId(null); setEditDraft(null); };
   const saveEdit = async (id) => {
     if (!editDraft.name || editDraft.hcp === '') return;
+    const isNettoCM = editDraft.cls === NETTO_CM_ID;
     await fbPatch('tournament/players/' + id, {
       name: editDraft.name,
       hcp: Number(editDraft.hcp),
       classes: editDraft.cls ? [editDraft.cls] : [],
       geschlecht: editDraft.geschlecht,
       geburtsjahr: editDraft.geburtsjahr || null,
-      nettoCM: editDraft.nettoCM,
-      tee: teeForGeschlecht(editDraft.geschlecht, editDraft.cls, editDraft.nettoCM),
+      nettoCM: isNettoCM,
+      tee: teeForGeschlecht(editDraft.geschlecht, editDraft.cls, isNettoCM),
     });
     if (editDraft.geburtsjahr) await upsertMember(editDraft.name, editDraft.geburtsjahr, editDraft.geschlecht);
     setEditingId(null); setEditDraft(null);
@@ -853,10 +867,12 @@ function PlayerAdmin({ tournament, reload }) {
         const pcls = isFixed ? parts[idx++] : undefined;
         const pg = (parts[idx] === 'w' || parts[idx] === 'm') ? parts[idx++] : 'm';
         let pgeb = (parts[idx] && /^\d{4}$/.test(parts[idx])) ? parts[idx++] : null;
-        let pNettoCM = false;
+        // Alte, separate ja/nein-Spalte bleibt aus Kompatibilitätsgründen nutzbar, ist aber nicht
+        // mehr nötig: "NettoCM" (oder "netto") kann jetzt direkt als klasse-Wert eingetragen werden.
+        let pNettoCM = ['nettocm', 'netto', NETTO_CM_ID.toLowerCase()].includes((pcls || '').toLowerCase());
         const nettoCMToken = (parts[idx] || '').toLowerCase();
         if (['ja', 'j', '1', 'true', 'nein', 'n', '0', 'false'].includes(nettoCMToken)) {
-          pNettoCM = ['ja', 'j', '1', 'true'].includes(nettoCMToken);
+          pNettoCM = pNettoCM || ['ja', 'j', '1', 'true'].includes(nettoCMToken);
           idx++;
         }
         const pflight = parts[idx];
@@ -866,7 +882,8 @@ function PlayerAdmin({ tournament, reload }) {
           if (rec && rec.geburtsjahr) pgeb = rec.geburtsjahr;
         }
         const id = newId();
-        playerUpdates[id] = { name: pname, hcp: Number(phcp), classes: pcls ? [pcls] : [], geschlecht: pg, geburtsjahr: pgeb, nettoCM: pNettoCM, tee: teeForGeschlecht(pg, pcls, pNettoCM) };
+        const finalCls = pNettoCM ? NETTO_CM_ID : pcls;
+        playerUpdates[id] = { name: pname, hcp: Number(phcp), classes: finalCls ? [finalCls] : [], geschlecht: pg, geburtsjahr: pgeb, nettoCM: pNettoCM, tee: teeForGeschlecht(pg, finalCls, pNettoCM) };
         if (pgeb) memberUpserts[memberKey(pname)] = { name: pname, geburtsjahr: pgeb, geschlecht: pg };
         if (pflight) {
           if (!flightGroups[pflight]) flightGroups[pflight] = [];
@@ -912,8 +929,9 @@ function PlayerAdmin({ tournament, reload }) {
           <input placeholder="Name" value={name} onChange={e => setName(e.target.value)} style={{ ...inputStyle, flex: 1, minWidth: 140 }} />
           <input placeholder="Hcp" type="number" value={hcp} onChange={e => setHcp(e.target.value)} style={{ ...inputStyle, width: 80 }} />
           {meta.classificationMode === 'fixed' && (
-            <select value={cls} onChange={e => setCls(e.target.value)} style={{ ...inputStyle, width: 110 }}>
+            <select value={cls} onChange={e => setCls(e.target.value)} style={{ ...inputStyle, width: 170 }}>
               {FIXED_CLASSES.map(c => <option key={c} value={c}>{c}</option>)}
+              {meta.type === 'clubmeisterschaft' && <option value={NETTO_CM_ID}>{NETTO_CM_LABEL}</option>}
             </select>
           )}
           <select value={geschlecht} onChange={e => setGeschlecht(e.target.value)} style={{ ...inputStyle, width: 110 }}>
@@ -921,12 +939,6 @@ function PlayerAdmin({ tournament, reload }) {
             <option value="w">Dame</option>
           </select>
           <input placeholder="Geburtsjahr" type="number" value={geburtsjahr} onChange={e => setGeburtsjahr(e.target.value)} style={{ ...inputStyle, width: 110 }} />
-          {meta.type === 'clubmeisterschaft' && (
-            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: C.inkDim, background: C.board, padding: '0 10px', borderRadius: 6 }}>
-              <input type="checkbox" checked={nettoCM} onChange={e => setNettoCM(e.target.checked)} />
-              Netto-Clubmeisterschaft
-            </label>
-          )}
           <button onClick={addPlayer} style={smallBtn}>+ Hinzufügen</button>
         </div>
       </div>
@@ -953,8 +965,9 @@ function PlayerAdmin({ tournament, reload }) {
                 <input placeholder="Name" value={editDraft.name} onChange={e => setEditDraft(d => ({ ...d, name: e.target.value }))} style={{ ...inputStyle, flex: 1, minWidth: 120 }} />
                 <input placeholder="Hcp" type="number" value={editDraft.hcp} onChange={e => setEditDraft(d => ({ ...d, hcp: e.target.value }))} style={{ ...inputStyle, width: 80 }} />
                 {meta.classificationMode === 'fixed' && (
-                  <select value={editDraft.cls} onChange={e => setEditDraft(d => ({ ...d, cls: e.target.value }))} style={{ ...inputStyle, width: 110 }}>
+                  <select value={editDraft.cls} onChange={e => setEditDraft(d => ({ ...d, cls: e.target.value }))} style={{ ...inputStyle, width: 170 }}>
                     {FIXED_CLASSES.map(c => <option key={c} value={c}>{c}</option>)}
+                    {meta.type === 'clubmeisterschaft' && <option value={NETTO_CM_ID}>{NETTO_CM_LABEL}</option>}
                   </select>
                 )}
                 <select value={editDraft.geschlecht} onChange={e => setEditDraft(d => ({ ...d, geschlecht: e.target.value }))} style={{ ...inputStyle, width: 110 }}>
@@ -962,12 +975,6 @@ function PlayerAdmin({ tournament, reload }) {
                   <option value="w">Dame</option>
                 </select>
                 <input placeholder="Geburtsjahr" type="number" value={editDraft.geburtsjahr} onChange={e => setEditDraft(d => ({ ...d, geburtsjahr: e.target.value }))} style={{ ...inputStyle, width: 110 }} />
-                {meta.type === 'clubmeisterschaft' && (
-                  <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: C.inkDim, background: C.card, padding: '0 10px', borderRadius: 6 }}>
-                    <input type="checkbox" checked={editDraft.nettoCM} onChange={e => setEditDraft(d => ({ ...d, nettoCM: e.target.checked }))} />
-                    Netto-Clubmeisterschaft
-                  </label>
-                )}
               </div>
               <div style={{ display: 'flex', gap: 8 }}>
                 <button onClick={() => saveEdit(id)} style={smallBtn}>Speichern</button>
@@ -1386,7 +1393,6 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
   const bruttoClasses = m.bruttoClasses || [{ id: 'Brutto', label: 'Brutto', prizeCount: m.prizeCount || 3 }];
   const hcpClassesWithPrize = (m.hcpClasses || []).map(c => ({ ...c, prizeCount: c.prizeCount || 3 }));
 
-  const NETTO_CM_ID = 'NettoCM';
   const showNettoCM = m.classificationMode === 'fixed' && m.type === 'clubmeisterschaft';
 
   const classIds = m.classificationMode === 'fixed'
@@ -1548,7 +1554,8 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
     // Netto-Clubmeisterschaft ist eine eigenständige Anmeldung (wie Herren eine eigene
     // Wertungsklasse) – nur Spieler mit explizitem Opt-in (p.nettoCM) zählen mit, nicht automatisch
     // jeder, der irgendwo einen Score einträgt.
-    const cmNettoRaw = (showNettoCM && p.nettoCM) ? stablefordTotalsAcrossRounds(id, p.hcp, p.tee, classRounds).netPts : null;
+    const isNettoCMPlayer = (p.classes && p.classes[0] === NETTO_CM_ID) || p.nettoCM;
+    const cmNettoRaw = (showNettoCM && isNettoCMPlayer) ? stablefordTotalsAcrossRounds(id, p.hcp, p.tee, classRounds).netPts : null;
     const cmNettoBaselineRow = classRounds.length * m.holes * 2;
     const cmNettoDiff = cmNettoRaw === null ? null : cmNettoRaw - cmNettoBaselineRow;
     if (isStableford) {
@@ -1590,7 +1597,7 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
     // Wichtig: auch Spieler ohne bisherigen Score anzeigen (mit "PAR"-Platzhalter), genau wie bei
     // den anderen Klassen-Tabs – sonst verschwindet die ganze Wertung, solange noch niemand
     // gespielt hat (der eigentliche Bug: vorher wurden Spieler ohne Score komplett ausgeblendet).
-    visibleRows = rows.filter(r => r.nettoCM);
+    visibleRows = rows.filter(r => (r.classes && r.classes[0] === NETTO_CM_ID) || r.nettoCM);
     visibleRows.sort((a, b) => (b.cmNettoDiff ?? -999) - (a.cmNettoDiff ?? -999));
   } else if (m.classificationMode === 'fixed') {
     // Feste Klassen (Herren/Damen/AK/Jugend) entscheiden nach Brutto. Ein Spieler kann dank
@@ -1673,7 +1680,7 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
         <div style={{ display: 'flex', gap: 6, padding: '12px 16px', borderBottom: `1px solid ${C.line}`, overflowX: 'auto' }}>
           {classIds.map(c => {
             const bc = bruttoClasses.find(x => x.id === c);
-            const label = c === NETTO_CM_ID ? 'Netto-Clubmeisterschaft' : (bc ? bc.label : (m.classificationMode === 'fixed' ? c : `Netto ${c}`));
+            const label = c === NETTO_CM_ID ? NETTO_CM_LABEL : (bc ? bc.label : (m.classificationMode === 'fixed' ? c : `Netto ${c}`));
             return (
             <button key={c} onClick={() => setActiveClass(c)}
               style={{ flexShrink: 0, fontSize: 12, padding: '5px 12px', borderRadius: 6, border: `1px solid ${activeClass === c ? C.ink : C.line}`, background: activeClass === c ? C.ink : '#fff', color: activeClass === c ? '#fff' : C.ink, cursor: 'pointer' }}>
