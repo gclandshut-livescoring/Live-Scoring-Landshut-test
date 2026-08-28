@@ -153,9 +153,12 @@ function effectiveTeeFor(p) {
 // geschlechtsneutral (einfach "AK30" wählen) – die Trennung in "AK30 Herren" / "AK30 Damen" passiert
 // erst hier, rein für die Anzeige/Rangliste. Männer stapeln sich innerhalb der Herren-AK-Klassen
 // (gemeinsames Tee Gelb), Herren bleibt bewusst separat (kein automatisches Stapeln mit AK).
-// JEDE Frau zählt immer automatisch in "Damen" mit, unabhängig von der registrierten Klasse
-// (gemeinsames Tee Rot bei allen Frauen) – plus alle AK-Damen-Klassen, für die ihr Alter reicht.
-// "Jugend" wird zusätzlich IMMER automatisch anhand des Geburtsjahrs ergänzt (unter 18).
+// Jede Frau, die als "Damen" oder eine AK-Klasse registriert ist, zählt zusätzlich immer automatisch
+// in "Damen" mit (gemeinsames Tee Rot) – plus alle AK-Damen-Klassen, für die ihr Alter reicht.
+// Explizit als "Jugend" registrierte Spieler (Mädchen wie Jungs) zählen dagegen NUR in Jugend, kein
+// Stapeln mit Damen/Herren/AK – genau wie Jungs durch die Jugend-Registrierung auch nicht bei Herren
+// mitzählen. "Jugend" wird zusätzlich automatisch anhand des Geburtsjahrs ergänzt (unter 18), außer
+// bei explizit als Jugend Registrierten (da schon durch die Registrierung selbst abgedeckt).
 // Netto-Clubmeisterschaft-Teilnehmer (nettoCM) sind eine Alternative, keine Zusatzwertung – sie
 // erscheinen in KEINER der übrigen Klassen (Herren/Damen/AK/Jugend), egal welches Alter/Geschlecht.
 function effectiveClassesFor(p) {
@@ -170,17 +173,20 @@ function effectiveClassesFor(p) {
   const age = p.geburtsjahr ? TOURNAMENT_YEAR - Number(p.geburtsjahr) : null;
   const result = new Set();
 
-  if (isWoman) {
+  if (base === 'Jugend') {
+    result.add('Jugend'); // Nur Jugend, kein Stapeln mit Damen/Herren/AK.
+  } else if (isWoman) {
     result.add('Damen');
     if (age !== null) AK_CLASSES.forEach(c => { if (age >= AK_MIN_AGE[c]) result.add(`${c} Damen`); });
+    if (age !== null && age < JUGEND_MAX_AGE) result.add('Jugend');
   } else if (AK_CLASSES.includes(base)) {
     result.add(`${base} Herren`);
     if (age !== null) AK_CLASSES.forEach(c => { if (age >= AK_MIN_AGE[c]) result.add(`${c} Herren`); });
+    if (age !== null && age < JUGEND_MAX_AGE) result.add('Jugend');
   } else if (base) {
     result.add(base); // Herren: kein Stapeln.
+    if (age !== null && age < JUGEND_MAX_AGE) result.add('Jugend');
   }
-
-  if (age !== null && age < JUGEND_MAX_AGE) result.add('Jugend');
 
   return [...result];
 }
@@ -1972,8 +1978,12 @@ function ScoreDetailModal({ tournament, playerId, initialRound, findPlayerRoundS
   const courseHcp = courseHandicapFor(p.hcp, effectiveTeeFor(p), holes);
 
   // Gesamtstand über alle Runden der Klasse, damit er oben neben dem Namen angezeigt werden kann.
+  // Netto-Klubmeisterschaft-Spieler rechnen IMMER nach Stableford-Punkten (rohe, aufsummierte Punktzahl),
+  // unabhängig vom allgemeinen Turnier-Scoring-Modus (der bei Clubmeisterschaft ja Zählspiel ist) –
+  // gleicher Fix wie in der Live-Rangliste.
+  const isNettoCMPlayer = (p.classes && p.classes[0] === NETTO_CM_ID) || p.nettoCM;
   const totalDisplay = (() => {
-    const isStbl = m.scoringMode === 'stableford';
+    const isStbl = isNettoCMPlayer || m.scoringMode === 'stableford';
     let gross = 0, parSum = 0, pts = 0, any = false;
     modalRounds.forEach(r => {
       const s = findPlayerRoundScores(playerId, r.id);
@@ -2006,7 +2016,9 @@ function ScoreDetailModal({ tournament, playerId, initialRound, findPlayerRoundS
     return { bg: C.dblbogey, col: '#fff' };
   };
 
-  const isStableford = m.scoringMode === 'stableford';
+  // Netto-Klubmeisterschaft-Spieler bekommen die kleine Netto-Punkte-Zahl pro Loch immer angezeigt,
+  // unabhängig vom allgemeinen Turnier-Scoring-Modus (der bei Clubmeisterschaft ja Zählspiel ist).
+  const isStableford = isNettoCMPlayer || m.scoringMode === 'stableford';
 
   const renderBlock = (startIdx, count) => {
     const cells = [];
