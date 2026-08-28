@@ -464,6 +464,19 @@ function AdminScoreEntry({ tournament, reload }) {
   // Alphabetisch/numerisch sortiert (z. B. "AK Herren 10:00" vor "AK Herren 10:40"), leichter zu finden.
   const flightIds = Object.keys(flights).sort((a, b) => (flights[a].name || '').localeCompare(flights[b].name || '', 'de', { numeric: true }));
   const [selectedFlightId, setSelectedFlightId] = useState(flightIds[0] || null);
+  const [resettingFlight, setResettingFlight] = useState(false);
+
+  // Setzt NUR die Scores dieses einen Flights zurück – wichtig, wenn andere Flights (z. B. schon
+  // früher gestartete) parallel echte Ergebnisse eintragen und nicht mit betroffen sein dürfen.
+  const resetThisFlight = async () => {
+    if (!selectedFlightId) return;
+    const fname = flights[selectedFlightId]?.name || 'diesen Flight';
+    if (!window.confirm(`Wirklich alle Scores für "${fname}" löschen? Andere Flights bleiben unangetastet. Das kann nicht rückgängig gemacht werden.`)) return;
+    setResettingFlight(true);
+    await fbPut(`tournament/scores/${selectedFlightId}`, null);
+    await reload();
+    setResettingFlight(false);
+  };
 
   if (flightIds.length === 0) {
     return <div style={{ color: C.muted, fontSize: 13, padding: 10 }}>Noch keine Flights angelegt – zuerst unter "Flights & Links" einen Flight erstellen.</div>;
@@ -481,6 +494,14 @@ function AdminScoreEntry({ tournament, reload }) {
             </button>
           ))}
         </div>
+        {selectedFlightId && (
+          <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid ${C.line}` }}>
+            <button onClick={resetThisFlight} disabled={resettingFlight} style={{ ...smallBtn, color: C.red, opacity: resettingFlight ? 0.6 : 1 }}>
+              {resettingFlight ? 'Wird zurückgesetzt…' : `Nur "${flights[selectedFlightId]?.name}" zurücksetzen`}
+            </button>
+            <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>Löscht nur die Scores dieses einen Flights (z. B. weil Spieler vor ihrem echten Start schon zum Testen was eingetippt haben) – andere Flights bleiben komplett unberührt.</div>
+          </div>
+        )}
       </div>
       {selectedFlightId && <SoloEntry key={selectedFlightId} tournament={tournament} flightId={selectedFlightId} reload={reload} isAdmin />}
     </div>
@@ -2313,6 +2334,20 @@ function SoloEntry({ tournament, flightId, reload, isAdmin }) {
         <div style={{ padding: '12px 18px', borderTop: `1px solid ${C.line}`, textAlign: 'center', fontSize: 11, color: C.muted }}>
           ✓ Automatisch gespeichert
         </div>
+      </div>
+
+      {/* Bewusst ganz unten, dezent und klein platziert – nicht oben, wo aus Versehen hingetippt
+          werden könnte. Setzt NUR die gerade aktive/angezeigte Runde zurück (z. B. Runde 3 an einem
+          eigenen Sonntags-Flight), nie andere, bereits gespielte Runden desselben Flights. */}
+      <div style={{ textAlign: 'center', marginTop: 28, paddingTop: 16, borderTop: `1px dashed ${C.line}` }}>
+        <button onClick={async () => {
+          const roundLabel = (flightRounds.find(r => r.id === round) || {}).label || `Runde ${round}`;
+          if (!window.confirm(`Wirklich alle bisher eingetragenen Scores für "${roundLabel}" löschen? Andere Runden bleiben erhalten. Das kann nicht rückgängig gemacht werden.`)) return;
+          await fbPut(`tournament/scores/${flightId}/${round}`, null);
+          await reload();
+        }} style={{ background: 'none', border: 'none', color: C.muted, fontSize: 11, textDecoration: 'underline', cursor: 'pointer', padding: 8 }}>
+          Nur diese Runde zurücksetzen (falls vorab getestet)
+        </button>
       </div>
     </div>
   );
