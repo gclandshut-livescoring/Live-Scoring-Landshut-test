@@ -898,6 +898,16 @@ function PlayerAdmin({ tournament, reload }) {
     await reload();
   };
 
+  // Disqualifikation: der zuletzt eingetragene Score bleibt exakt so stehen, wie er ist (keine
+  // Löschung, keine Änderung) – nur die Platzierung in der Rangliste wird ignoriert, der Spieler
+  // rutscht automatisch ans Ende seiner Klasse und zeigt "DQ" statt einer Rangzahl.
+  const toggleDisqualified = async (id, current) => {
+    const next = !current;
+    if (next && !window.confirm('Diesen Spieler wirklich disqualifizieren? Er rutscht dadurch in der Rangliste ans Ende (zeigt "DQ" statt Rang), der bisherige Score bleibt aber unverändert sichtbar.')) return;
+    await fbPatch('tournament/players/' + id, { disqualified: next });
+    await reload();
+  };
+
   // Spieler bearbeiten (Name, Hcp, Klasse, Geschlecht, Geburtsjahr, Netto-CM-Anmeldung) statt
   // löschen + neu anlegen zu müssen – wichtig, wenn ein Turnier schon läuft und nur eine
   // Falschangabe korrigiert werden muss.
@@ -1103,9 +1113,10 @@ function PlayerAdmin({ tournament, reload }) {
               </div>
             </div>
           ) : (
-            <div key={id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 16px', borderBottom: `1px solid ${C.line}` }}>
+            <div key={id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 16px', borderBottom: `1px solid ${C.line}`, background: p.disqualified ? C.redTint : 'transparent' }}>
               <div>
                 <span style={{ fontSize: 14, fontWeight: 500 }}>{p.name}</span>
+                {p.disqualified && <span style={{ fontSize: 11, fontWeight: 700, color: C.red, marginLeft: 8, border: `1px solid ${C.red}`, borderRadius: 4, padding: '1px 6px' }}>DQ</span>}
                 <span style={{ fontSize: 12, color: C.muted, marginLeft: 8 }}>
                   Hcp {p.hcp} · {p.geschlecht === 'w' ? 'Dame' : 'Herr'}{p.geburtsjahr ? ` · *${p.geburtsjahr}` : ''} · Tee {effectiveTeeFor(p)}
                   {meta.classificationMode === 'fixed' ? ` · ${effectiveClassesFor(p).join(', ') || '–'}` : (p.classes && p.classes.length ? '· ' + p.classes.join(', ') : '')}
@@ -1114,6 +1125,7 @@ function PlayerAdmin({ tournament, reload }) {
               </div>
               <div style={{ display: 'flex', gap: 6 }}>
                 <button onClick={() => startEdit(id, p)} style={smallBtn}>Bearbeiten</button>
+                <button onClick={() => toggleDisqualified(id, p.disqualified)} style={{ ...smallBtn, color: p.disqualified ? C.green : C.red }}>{p.disqualified ? 'DQ aufheben' : 'Disqualifizieren'}</button>
                 <button onClick={() => removePlayer(id)} style={{ ...smallBtn, color: C.red }}>Entfernen</button>
               </div>
             </div>
@@ -1821,6 +1833,14 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
   const activeBruttoClass = bruttoClasses.find(c => c.id === activeClass);
   const activeHcpClass = hcpClassesWithPrize.find(c => c.id === activeClass);
 
+  // Disqualifizierte Spieler rutschen bei jeder Sortierung ans Ende ihrer Klasse, unabhängig vom
+  // eigentlichen Sortierkriterium – der zuletzt eingetragene Score bleibt dabei unverändert sichtbar,
+  // nur die Platzierung wird ignoriert.
+  const dqAwareSort = (arr, compareFn) => arr.sort((a, b) => {
+    if (!!a.disqualified !== !!b.disqualified) return a.disqualified ? 1 : -1;
+    return compareFn(a, b);
+  });
+
   let visibleRows;
   if (activeClass === NETTO_CM_ID) {
     // Netto-Clubmeisterschaft: eine einzige kombinierte Wertung über alle angemeldeten Teilnehmer.
@@ -1828,18 +1848,18 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
     // den anderen Klassen-Tabs – sonst verschwindet die ganze Wertung, solange noch niemand
     // gespielt hat (der eigentliche Bug: vorher wurden Spieler ohne Score komplett ausgeblendet).
     visibleRows = rows.filter(r => (r.classes && r.classes[0] === NETTO_CM_ID) || r.nettoCM);
-    visibleRows.sort((a, b) => (b.cmNettoRaw ?? -1) - (a.cmNettoRaw ?? -1));
+    dqAwareSort(visibleRows, (a, b) => (b.cmNettoRaw ?? -1) - (a.cmNettoRaw ?? -1));
   } else if (m.classificationMode === 'fixed') {
     // Feste Klassen (Herren/Damen/AK/Jugend) entscheiden nach Brutto. Ein Spieler kann dank
     // Alters-Mehrfachwertung in mehreren AK-Klassen gleichzeitig auftauchen (effClasses).
     visibleRows = rows.filter(r => (r.effClasses || []).includes(activeClass));
-    visibleRows.sort((a, b) => (a.grossToPar ?? 999) - (b.grossToPar ?? 999));
+    dqAwareSort(visibleRows, (a, b) => (a.grossToPar ?? 999) - (b.grossToPar ?? 999));
   } else if (activeBruttoClass) {
     visibleRows = rows.filter(r => (isStableford ? r.grossPts !== null : r.gross !== null) && (!activeBruttoClass.gender || r.geschlecht === activeBruttoClass.gender));
-    visibleRows.sort((a, b) => isStableford ? (b.grossPts ?? -1) - (a.grossPts ?? -1) : (a.grossToPar ?? 999) - (b.grossToPar ?? 999));
+    dqAwareSort(visibleRows, (a, b) => isStableford ? (b.grossPts ?? -1) - (a.grossPts ?? -1) : (a.grossToPar ?? 999) - (b.grossToPar ?? 999));
   } else {
     visibleRows = rows.filter(r => playerHcpClass(r.hcp, hcpClassesWithPrize) === activeClass);
-    visibleRows.sort((a, b) => isStableford ? (b.netPts ?? -1) - (a.netPts ?? -1) : (a.netToPar ?? 999) - (b.netToPar ?? 999));
+    dqAwareSort(visibleRows, (a, b) => isStableford ? (b.netPts ?? -1) - (a.netPts ?? -1) : (a.netToPar ?? 999) - (b.netToPar ?? 999));
   }
 
   // Zeigt Brutto an, wenn entweder eine feste Klasse (Clubmeisterschaft) oder der Brutto-Tab aktiv ist.
@@ -1865,7 +1885,8 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
     { bg: 'rgba(29,122,76,0.14)', color: C.green, weight: 600, size: 16 },
     { bg: 'rgba(29,122,76,0.07)', color: C.ink, weight: 600, size: 15 },
   ];
-  const prizeTierForRow = (i) => {
+  const prizeTierForRow = (i, row) => {
+    if (row && row.disqualified) return null; // Disqualifizierte bekommen nie eine Sieger-Hervorhebung
     if (excludedNote && i === 0) return null; // ausgeschlossener Spieler bekommt keinen Preisrang-Look
     const rank = excludedNote ? i - 1 : i;
     return rank < prizeCount ? PRIZE_TIERS[rank] : null;
@@ -1941,12 +1962,12 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
 
         <div>
           {visibleRows.map((r, i) => {
-            const tier = prizeTierForRow(i);
+            const tier = prizeTierForRow(i, r);
             return (
             <div key={r.id} onClick={() => setDetailPlayer(r.id)}
               style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 20px', background: tier ? tier.bg : 'transparent', borderBottom: `1px solid ${C.line}`, cursor: 'pointer' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-                <span style={{ fontSize: 13, color: C.muted, width: 18, fontWeight: 600 }}>{i + 1}</span>
+                <span style={{ fontSize: 13, color: r.disqualified ? C.red : C.muted, width: 24, fontWeight: 700 }}>{r.disqualified ? 'DQ' : i + 1}</span>
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: 7 }}>
                   <span style={{ fontSize: tier ? tier.size : 15, fontWeight: tier ? tier.weight : 500, color: tier ? tier.color : C.ink }}>{lastNameFirst(r.name)}{isStableford && activeHcpClass && r.id === bruttoLeaderIdFor(r.geschlecht) ? ' 🏆' : ''}</span>
                 </div>
