@@ -1286,6 +1286,35 @@ function FlightAdmin({ tournament, reload }) {
     await reload();
   };
 
+  // Notfall-Werkzeug: holt Scores zurück, die "verwaist" sind, weil der zugehörige Flight versehentlich
+  // gelöscht wurde (removeFlight löscht nur den Flight-Datensatz, nicht die Scores selbst – die bleiben
+  // unter der alten Flight-ID in der Datenbank liegen, sind aber ohne Flight-Referenz nicht mehr sichtbar).
+  const [recoverOldId, setRecoverOldId] = useState('');
+  const [recoverTargetFlightId, setRecoverTargetFlightId] = useState('');
+  const [recovering, setRecovering] = useState(false);
+  const [recoverStatus, setRecoverStatus] = useState(null);
+  const recoverOrphanedScores = async () => {
+    if (!recoverOldId || !recoverTargetFlightId) return;
+    setRecovering(true);
+    setRecoverStatus(null);
+    try {
+      const oldScores = await fbGet(`tournament/scores/${recoverOldId}`);
+      if (!oldScores) {
+        setRecoverStatus({ ok: false, text: 'Unter dieser alten Flight-ID wurden keine Scores gefunden. ID bitte nochmal in Firebase prüfen.' });
+        setRecovering(false);
+        return;
+      }
+      await fbPatch(`tournament/scores/${recoverTargetFlightId}`, oldScores);
+      await fbPut(`tournament/scores/${recoverOldId}`, null);
+      setRecoverStatus({ ok: true, text: 'Scores erfolgreich übernommen! Prüfe die Live-Rangliste zur Kontrolle.' });
+      setRecoverOldId(''); setRecoverTargetFlightId('');
+      await reload();
+    } catch (e) {
+      setRecoverStatus({ ok: false, text: 'Fehler: ' + e.message });
+    }
+    setRecovering(false);
+  };
+
   // Flight bearbeiten (Spieler-Zusammensetzung, Runden) – Link + Passwort bleiben dabei unverändert,
   // damit bereits verschickte Links gültig bleiben. Wichtig z. B. wenn ein Spieler kurzfristig aufgibt.
   const startEditFlight = (id, f) => {
@@ -1515,6 +1544,31 @@ function FlightAdmin({ tournament, reload }) {
           <button onClick={generateFlightsPDF} disabled={pdfGenerating} style={{ ...smallBtn, opacity: pdfGenerating ? 0.6 : 1 }}>{pdfGenerating ? 'PDF wird erstellt…' : `PDF mit allen ${Object.keys(flights).length} Flights herunterladen`}</button>
         </div>
       )}
+
+      <div style={{ background: C.redTint, border: `1px solid ${C.red}`, borderRadius: 12, padding: 20 }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: C.red, marginBottom: 6 }}>🚑 Verwaiste Scores wiederherstellen</div>
+        <div style={{ fontSize: 11, color: C.inkDim, marginBottom: 10 }}>
+          Wurde ein Flight versehentlich gelöscht? Die eingetragenen Scores bleiben in der Datenbank erhalten (nur nicht mehr sichtbar), weil sie unter der alten Flight-ID "verwaist" liegen. So holt ihr sie zurück:
+        </div>
+        <ol style={{ fontSize: 11, color: C.inkDim, marginBottom: 12, paddingLeft: 18 }}>
+          <li>Neuen Flight ganz normal weiter unten mit denselben Spielern anlegen (neuer Link/Passwort, das ist ok)</li>
+          <li>In Firebase Console → Realtime Database → tournament → scores: die alte, jetzt "übrig gebliebene" Flight-ID kopieren (die, die unter "flights" nicht mehr auftaucht)</li>
+          <li>Alte ID unten eintragen, den neu angelegten Flight als Ziel auswählen, übernehmen</li>
+        </ol>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+          <input placeholder="Alte Flight-ID" value={recoverOldId} onChange={e => setRecoverOldId(e.target.value.trim())} style={{ ...inputStyle, width: 160 }} />
+          <select value={recoverTargetFlightId} onChange={e => setRecoverTargetFlightId(e.target.value)} style={{ ...inputStyle, width: 200 }}>
+            <option value="">Ziel-Flight wählen…</option>
+            {Object.entries(flights).sort((a, b) => (a[1].name || '').localeCompare(b[1].name || '', 'de', { numeric: true })).map(([fid, f]) => (
+              <option key={fid} value={fid}>{f.name}</option>
+            ))}
+          </select>
+        </div>
+        <button onClick={recoverOrphanedScores} disabled={recovering || !recoverOldId || !recoverTargetFlightId} style={{ ...smallBtn, background: C.red, color: '#fff', border: 'none', opacity: (recovering || !recoverOldId || !recoverTargetFlightId) ? 0.5 : 1 }}>
+          {recovering ? 'Wird übernommen…' : 'Scores übernehmen'}
+        </button>
+        {recoverStatus && <div style={{ fontSize: 12, color: recoverStatus.ok ? C.green : C.red, marginTop: 8, fontWeight: 600 }}>{recoverStatus.text}</div>}
+      </div>
 
       <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20 }}>
         <div style={{ fontSize: 13, color: C.inkDim, marginBottom: 10 }}>Neuen Flight anlegen</div>
