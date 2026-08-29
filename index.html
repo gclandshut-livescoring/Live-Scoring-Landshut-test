@@ -2209,6 +2209,11 @@ function SoloEntry({ tournament, flightId, reload, isAdmin }) {
 
   const [round, setRound] = useState(defaultRound);
   const [hole, setHole] = useState(1);
+  // Wichtiger Fix: Beim Wechsel der aktiven Runde (z. B. automatischer Sprung von Runde 1 auf
+  // Runde 2, sobald Runde 1 fertig ist) muss der Loch-Zeiger wieder auf Loch 1 zurückgesetzt
+  // werden. Vorher blieb er auf dem zuletzt bearbeiteten Loch der alten Runde stehen (z. B. 17/18),
+  // wodurch die ersten Eintragungen der neuen Runde fälschlich an einem falschen Loch landeten.
+  useEffect(() => { setHole(1); }, [round]);
   const scores = (tournament.scores && tournament.scores[flightId] && tournament.scores[flightId][round]) || {};
 
   // Nur Spieler, für die diese Runde überhaupt zählt (z. B. keine Damen-Zeile in Runde 3).
