@@ -1883,53 +1883,60 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
         </a>
       )}
       <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, overflow: 'visible' }}>
-        <div style={{ position: 'relative', height: 150, borderRadius: '12px 12px 0 0', overflow: 'hidden', backgroundImage: `url(${HEADER_PHOTO})`, backgroundSize: 'cover', backgroundPosition: 'center 68%' }}>
-          <div style={{ position: 'absolute', inset: 0, background: 'rgba(20,24,18,0.55)' }} />
-          <img src={CLUB_LOGO} alt="GC Landshut Logo" style={{ position: 'absolute', left: 16, top: 16, width: 46, height: 46, borderRadius: '50%' }} />
-          <div style={{ position: 'absolute', left: 0, right: 0, bottom: 16, textAlign: 'center' }}>
-            <div style={{ fontFamily: "'Cinzel', serif", fontSize: 24, fontWeight: 600, color: '#fff', letterSpacing: '0.03em' }}>Livescoring</div>
+        {/* Sticky Kopfbereich: Foto, Titel, Runden-Tabs, Klassen-Tabs und Total/Loch-Beschriftung
+            bleiben beim Scrollen (auch beim automatischen Durchrotieren) oben fixiert, damit man
+            jederzeit die Klasse wechseln kann, ohne erst zurückscrollen zu müssen. Nur die
+            Spielerliste darunter läuft durch. Reine Anzeige-Änderung, keine Auswirkung auf die
+            Score-Logik/Eingabe. */}
+        <div style={{ position: 'sticky', top: 0, zIndex: 20, background: C.card, borderRadius: '12px 12px 0 0', overflow: 'hidden' }}>
+          <div style={{ position: 'relative', height: 150, backgroundImage: `url(${HEADER_PHOTO})`, backgroundSize: 'cover', backgroundPosition: 'center 68%' }}>
+            <div style={{ position: 'absolute', inset: 0, background: 'rgba(20,24,18,0.55)' }} />
+            <img src={CLUB_LOGO} alt="GC Landshut Logo" style={{ position: 'absolute', left: 16, top: 16, width: 46, height: 46, borderRadius: '50%' }} />
+            <div style={{ position: 'absolute', left: 0, right: 0, bottom: 16, textAlign: 'center' }}>
+              <div style={{ fontFamily: "'Cinzel', serif", fontSize: 24, fontWeight: 600, color: '#fff', letterSpacing: '0.03em' }}>Livescoring</div>
+            </div>
           </div>
-        </div>
-        <div style={{ position: 'relative', textAlign: 'center', paddingTop: 14, borderBottom: `1px solid ${C.line}` }}>
-          <div style={{ position: 'absolute', left: '50%', top: -14, transform: 'translateX(-50%)', display: 'inline-flex', alignItems: 'center', gap: 5, background: C.red, color: '#fff', fontSize: 11, padding: '4px 12px', borderRadius: 20, border: `2px solid ${C.card}`, whiteSpace: 'nowrap' }}>
-            <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#fff' }} />live
+          <div style={{ position: 'relative', textAlign: 'center', paddingTop: 14, borderBottom: `1px solid ${C.line}` }}>
+            <div style={{ position: 'absolute', left: '50%', top: -14, transform: 'translateX(-50%)', display: 'inline-flex', alignItems: 'center', gap: 5, background: C.red, color: '#fff', fontSize: 11, padding: '4px 12px', borderRadius: 20, border: `2px solid ${C.card}`, whiteSpace: 'nowrap' }}>
+              <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#fff' }} />live
+            </div>
+            <div style={{ fontSize: 11, color: C.muted, paddingBottom: 12 }}>{m.name || 'Turnier'}</div>
           </div>
-          <div style={{ fontSize: 11, color: C.muted, paddingBottom: 12 }}>{m.name || 'Turnier'}</div>
-        </div>
 
-        {m.rounds && m.rounds.length > 1 && (
-          <div style={{ display: 'flex', gap: 6, padding: '10px 16px', borderBottom: `1px solid ${C.line}`, overflowX: 'auto' }}>
-            {m.rounds.map(r => (
-              <button key={r.id} onClick={() => setActiveRound(r.id)}
-                style={{ flexShrink: 0, fontSize: 12, padding: '5px 12px', borderRadius: 6, border: `1px solid ${effectiveRound === r.id ? C.ink : C.line}`, background: effectiveRound === r.id ? C.ink : '#fff', color: effectiveRound === r.id ? '#fff' : C.ink, cursor: 'pointer' }}>
-                {r.label}
+          {m.rounds && m.rounds.length > 1 && (
+            <div style={{ display: 'flex', gap: 6, padding: '10px 16px', borderBottom: `1px solid ${C.line}`, overflowX: 'auto' }}>
+              {m.rounds.map(r => (
+                <button key={r.id} onClick={() => setActiveRound(r.id)}
+                  style={{ flexShrink: 0, fontSize: 12, padding: '5px 12px', borderRadius: 6, border: `1px solid ${effectiveRound === r.id ? C.ink : C.line}`, background: effectiveRound === r.id ? C.ink : '#fff', color: effectiveRound === r.id ? '#fff' : C.ink, cursor: 'pointer' }}>
+                  {r.label}
+                </button>
+              ))}
+            </div>
+          )}
+
+          <div style={{ display: 'flex', gap: 6, padding: '12px 16px', borderBottom: `1px solid ${C.line}`, overflowX: 'auto' }}>
+            {classIds.map(c => {
+              const bc = bruttoClasses.find(x => x.id === c);
+              const label = c === NETTO_CM_ID ? NETTO_CM_LABEL : (bc ? bc.label : (m.classificationMode === 'fixed' ? c : `Netto ${c}`));
+              return (
+              <button key={c} onClick={() => setActiveClass(c)}
+                style={{ flexShrink: 0, fontSize: 12, padding: '5px 12px', borderRadius: 6, border: `1px solid ${activeClass === c ? C.ink : C.line}`, background: activeClass === c ? C.ink : '#fff', color: activeClass === c ? '#fff' : C.ink, cursor: 'pointer' }}>
+                {label}
               </button>
-            ))}
+              );
+            })}
           </div>
-        )}
 
-        <div style={{ display: 'flex', gap: 6, padding: '12px 16px', borderBottom: `1px solid ${C.line}`, overflowX: 'auto' }}>
-          {classIds.map(c => {
-            const bc = bruttoClasses.find(x => x.id === c);
-            const label = c === NETTO_CM_ID ? NETTO_CM_LABEL : (bc ? bc.label : (m.classificationMode === 'fixed' ? c : `Netto ${c}`));
-            return (
-            <button key={c} onClick={() => setActiveClass(c)}
-              style={{ flexShrink: 0, fontSize: 12, padding: '5px 12px', borderRadius: 6, border: `1px solid ${activeClass === c ? C.ink : C.line}`, background: activeClass === c ? C.ink : '#fff', color: activeClass === c ? '#fff' : C.ink, cursor: 'pointer' }}>
-              {label}
-            </button>
-            );
-          })}
-        </div>
+          {excludedNote && (
+            <div style={{ padding: '8px 20px', fontSize: 11, color: C.muted, background: C.board, borderBottom: `1px solid ${C.line}` }}>
+              {lastNameFirst(excludedNote)} führt in Netto, hat aber bereits Brutto gewonnen – Netto-Sieg geht an Platz 2.
+            </div>
+          )}
 
-        {excludedNote && (
-          <div style={{ padding: '8px 20px', fontSize: 11, color: C.muted, background: C.board, borderBottom: `1px solid ${C.line}` }}>
-            {lastNameFirst(excludedNote)} führt in Netto, hat aber bereits Brutto gewonnen – Netto-Sieg geht an Platz 2.
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 18, padding: '8px 20px 4px', borderBottom: `1px solid ${C.line}` }}>
+            <div style={{ textAlign: 'center', minWidth: 54, fontSize: 11, color: C.muted, fontWeight: 600 }}>Total</div>
+            <div style={{ textAlign: 'center', minWidth: 30, fontSize: 11, color: C.muted, fontWeight: 600 }}>Loch</div>
           </div>
-        )}
-
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 18, padding: '8px 20px 4px', borderBottom: `1px solid ${C.line}` }}>
-          <div style={{ textAlign: 'center', minWidth: 54, fontSize: 11, color: C.muted, fontWeight: 600 }}>Total</div>
-          <div style={{ textAlign: 'center', minWidth: 30, fontSize: 11, color: C.muted, fontWeight: 600 }}>Loch</div>
         </div>
 
         <div>
