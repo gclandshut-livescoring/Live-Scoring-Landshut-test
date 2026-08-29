@@ -1249,11 +1249,27 @@ function FlightAdmin({ tournament, reload }) {
     return `Achtung: ${[...new Set(nonHerren)].join(', ')} spielt an unterschiedlichen Tagen (je 1 Runde pro Tag) – bitte lieber zwei separate Flights (Samstag / Sonntag) statt einem Flight mit mehreren Runden anlegen.`;
   };
 
-  // Spieler, die schon in einem anderen Flight stecken – bei der Neuanlage ausgegraut, damit man
-  // niemanden versehentlich doppelt einteilt.
-  const assignedElsewhere = (playerId) => Object.entries(flights).some(([fid, f]) => fid !== editingFlightId && (f.playerIds || []).includes(playerId));
-  const whichFlight = (playerId) => {
-    const entry = Object.entries(flights).find(([fid, f]) => fid !== editingFlightId && (f.playerIds || []).includes(playerId));
+  // Spieler, die für DIESELBE(N) Runde(n) schon in einem anderen Flight stecken – bei der Neuanlage
+  // ausgegraut, damit man niemanden versehentlich doppelt für dieselbe Runde einteilt. Wichtig: gilt
+  // NUR bei Rundenüberschneidung – ein Spieler, der schon in einem Samstag-Flight (Runde 1+2) ist,
+  // darf trotzdem in einen neuen Sonntag-Flight (nur Runde 3), weil sich die Runden nicht überschneiden.
+  const assignedElsewhere = (playerId, roundsToCheck) => {
+    const checkRounds = (roundsToCheck && roundsToCheck.length) ? roundsToCheck : allRounds.map(r => r.id);
+    return Object.entries(flights).some(([fid, f]) => {
+      if (fid === editingFlightId) return false;
+      if (!(f.playerIds || []).includes(playerId)) return false;
+      const fRounds = (f.rounds && f.rounds.length) ? f.rounds : allRounds.map(r => r.id); // Altbestand ohne rounds-Feld: gilt für alle Runden
+      return fRounds.some(r => checkRounds.includes(r));
+    });
+  };
+  const whichFlight = (playerId, roundsToCheck) => {
+    const checkRounds = (roundsToCheck && roundsToCheck.length) ? roundsToCheck : allRounds.map(r => r.id);
+    const entry = Object.entries(flights).find(([fid, f]) => {
+      if (fid === editingFlightId) return false;
+      if (!(f.playerIds || []).includes(playerId)) return false;
+      const fRounds = (f.rounds && f.rounds.length) ? f.rounds : allRounds.map(r => r.id);
+      return fRounds.some(r => checkRounds.includes(r));
+    });
     return entry ? entry[1].name : null;
   };
 
@@ -1390,7 +1406,7 @@ function FlightAdmin({ tournament, reload }) {
     ? expandFixedClassIds(FIXED_CLASSES)
     : [...(meta.bruttoClasses || [{ id: 'Brutto' }]).map(c => c.id), ...(meta.hcpClasses || []).map(c => c.id)];
 
-  const unassignedPlayers = Object.entries(players).filter(([id]) => !assignedElsewhere(id)).map(([id, p]) => ({ id, ...p }));
+  const unassignedPlayers = Object.entries(players).filter(([id]) => !assignedElsewhere(id, autoRounds)).map(([id, p]) => ({ id, ...p }));
 
   const buildAutoFlights = async () => {
     let candidates = unassignedPlayers;
@@ -1505,9 +1521,9 @@ function FlightAdmin({ tournament, reload }) {
         <input placeholder="Flight-Name (z. B. Flight 1)" value={name} onChange={e => setName(e.target.value)} style={{ ...inputStyle, marginBottom: 10 }} />
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
           {sortedPlayers.map(([id, p]) => {
-            const taken = assignedElsewhere(id);
+            const taken = assignedElsewhere(id, selectedRounds);
             return (
-              <button key={id} onClick={() => !taken && toggle(id)} disabled={taken} title={taken ? `Bereits in ${whichFlight(id)}` : ''}
+              <button key={id} onClick={() => !taken && toggle(id)} disabled={taken} title={taken ? `Bereits in ${whichFlight(id, selectedRounds)}` : ''}
                 style={{ padding: '6px 12px', borderRadius: 6, border: `1px solid ${selected.includes(id) ? C.ink : C.line}`, background: selected.includes(id) ? C.ink : (taken ? C.board : '#fff'), color: selected.includes(id) ? '#fff' : (taken ? C.muted : C.ink), fontSize: 12, cursor: taken ? 'not-allowed' : 'pointer', opacity: taken ? 0.6 : 1 }}>
                 {p.name}{taken ? ' (vergeben)' : ''}
               </button>
@@ -1542,9 +1558,9 @@ function FlightAdmin({ tournament, reload }) {
               <input value={editName} onChange={e => setEditName(e.target.value)} style={{ ...inputStyle, marginBottom: 10 }} />
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
                 {sortedPlayers.map(([pid, p]) => {
-                  const taken = assignedElsewhere(pid) && !editSelected.includes(pid);
+                  const taken = assignedElsewhere(pid, editRounds) && !editSelected.includes(pid);
                   return (
-                    <button key={pid} onClick={() => !taken && toggleEditPlayer(pid)} disabled={taken} title={taken ? `Bereits in ${whichFlight(pid)}` : ''}
+                    <button key={pid} onClick={() => !taken && toggleEditPlayer(pid)} disabled={taken} title={taken ? `Bereits in ${whichFlight(pid, editRounds)}` : ''}
                       style={{ padding: '6px 12px', borderRadius: 6, border: `1px solid ${editSelected.includes(pid) ? C.ink : C.line}`, background: editSelected.includes(pid) ? C.ink : (taken ? C.board : '#fff'), color: editSelected.includes(pid) ? '#fff' : (taken ? C.muted : C.ink), fontSize: 12, cursor: taken ? 'not-allowed' : 'pointer', opacity: taken ? 0.6 : 1 }}>
                       {p.name}{taken ? ' (vergeben)' : ''}
                     </button>
