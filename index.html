@@ -20,6 +20,11 @@
   input, select, button { font-family: inherit; }
   .wrap { max-width: 720px; margin: 0 auto; padding: 16px; }
   @media (min-width: 900px) { .wrap { max-width: 900px; padding: 32px; } }
+  /* Live-Rangliste: auf großen Desktop-Bildschirmen deutlich breiter nutzen, statt wie eine
+     schmale mobile Ansicht in der Mitte zu stehen. Betrifft NUR die Zuschauer-/Live-Ansicht,
+     keine anderen Seiten (Score-Eingabe, Admin bleiben unverändert schmal). */
+  .leaderboard-wrap { max-width: 620px; }
+  @media (min-width: 900px) { .leaderboard-wrap { max-width: 1100px; } }
 </style>
 </head>
 <body>
@@ -621,6 +626,17 @@ function TournamentSetup({ tournament, reload }) {
     await reload();
   };
 
+  // Runden-genaue Sperre: ergänzend zur globalen Sperre – z. B. um NUR die gestrige Runde (deren
+  // Link/Passwort Spieler evtl. noch offen/gespeichert haben) vor versehentlichen nachträglichen
+  // Änderungen zu schützen, während heutige Runden weiterhin ganz normal offen für Eingaben bleiben.
+  const [lockedRounds, setLockedRounds] = useState(m.lockedRounds || []);
+  const toggleRoundLock = async (rid) => {
+    const next = lockedRounds.includes(rid) ? lockedRounds.filter(x => x !== rid) : [...lockedRounds, rid];
+    setLockedRounds(next);
+    await fbPatch('tournament/meta', { lockedRounds: next });
+    await reload();
+  };
+
   // Setzt ALLE eingetragenen Scores zurück (z. B. weil Spieler vorab zum Testen schon was eingetippt
   // haben) – Spieler, Flights und die Turnier-Konfiguration bleiben dabei unangetastet.
   const [resetting, setResetting] = useState(false);
@@ -664,6 +680,20 @@ function TournamentSetup({ tournament, reload }) {
           {scoringLocked ? 'Jetzt freischalten' : 'Jetzt sperren'}
         </button>
       </div>
+
+      {rounds.length > 1 && (
+        <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, color: C.inkDim, marginBottom: 4 }}>Einzelne Runde(n) sperren</div>
+          <div style={{ fontSize: 12, color: C.muted, marginBottom: 10 }}>Zusätzlich zur globalen Sperre oben: sperrt NUR die ausgewählte(n) Runde(n) für Spieler-Eingaben (z. B. die gestrige Runde, deren Link/Passwort manche Spieler noch offen haben) – andere Runden bleiben unabhängig davon normal bearbeitbar. Du selbst (Tab "Scores") bist nie betroffen.</div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {rounds.map(r => (
+              <label key={r.id} onClick={() => toggleRoundLock(r.id)} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: lockedRounds.includes(r.id) ? '#fff' : C.inkDim, background: lockedRounds.includes(r.id) ? C.red : C.board, padding: '7px 14px', borderRadius: 8, cursor: 'pointer', fontWeight: lockedRounds.includes(r.id) ? 600 : 400 }}>
+                {lockedRounds.includes(r.id) ? '🔒' : '🔓'} {r.label}
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20 }}>
         <div style={{ fontSize: 14, fontWeight: 600, color: C.inkDim, marginBottom: 4 }}>Alle Scores zurücksetzen</div>
@@ -904,7 +934,17 @@ function PlayerAdmin({ tournament, reload }) {
   const toggleDisqualified = async (id, current) => {
     const next = !current;
     if (next && !window.confirm('Diesen Spieler wirklich disqualifizieren? Er rutscht dadurch in der Rangliste ans Ende (zeigt "DQ" statt Rang), der bisherige Score bleibt aber unverändert sichtbar.')) return;
-    await fbPatch('tournament/players/' + id, { disqualified: next });
+    await fbPatch('tournament/players/' + id, { disqualified: next, withdrawn: false });
+    await reload();
+  };
+
+  // Aufgegeben (WD = withdrawn): eigener Status, getrennt von Disqualifikation – z. B. bei Verletzung
+  // oder freiwilligem Abbruch, keine Regelverletzung. Verhält sich in der Rangliste identisch zu DQ
+  // (ans Ende, Score bleibt stehen), zeigt aber "WD" statt "DQ" zur klaren Unterscheidung.
+  const toggleWithdrawn = async (id, current) => {
+    const next = !current;
+    if (next && !window.confirm('Diesen Spieler wirklich als "aufgegeben" markieren? Er rutscht dadurch in der Rangliste ans Ende (zeigt "WD" statt Rang), der bisherige Score bleibt aber unverändert sichtbar.')) return;
+    await fbPatch('tournament/players/' + id, { withdrawn: next, disqualified: false });
     await reload();
   };
 
@@ -1113,10 +1153,11 @@ function PlayerAdmin({ tournament, reload }) {
               </div>
             </div>
           ) : (
-            <div key={id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 16px', borderBottom: `1px solid ${C.line}`, background: p.disqualified ? C.redTint : 'transparent' }}>
+            <div key={id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 16px', borderBottom: `1px solid ${C.line}`, background: (p.disqualified || p.withdrawn) ? C.redTint : 'transparent' }}>
               <div>
                 <span style={{ fontSize: 14, fontWeight: 500 }}>{p.name}</span>
                 {p.disqualified && <span style={{ fontSize: 11, fontWeight: 700, color: C.red, marginLeft: 8, border: `1px solid ${C.red}`, borderRadius: 4, padding: '1px 6px' }}>DQ</span>}
+                {p.withdrawn && <span style={{ fontSize: 11, fontWeight: 700, color: C.red, marginLeft: 8, border: `1px solid ${C.red}`, borderRadius: 4, padding: '1px 6px' }}>WD</span>}
                 <span style={{ fontSize: 12, color: C.muted, marginLeft: 8 }}>
                   Hcp {p.hcp} · {p.geschlecht === 'w' ? 'Dame' : 'Herr'}{p.geburtsjahr ? ` · *${p.geburtsjahr}` : ''} · Tee {effectiveTeeFor(p)}
                   {meta.classificationMode === 'fixed' ? ` · ${effectiveClassesFor(p).join(', ') || '–'}` : (p.classes && p.classes.length ? '· ' + p.classes.join(', ') : '')}
@@ -1125,6 +1166,7 @@ function PlayerAdmin({ tournament, reload }) {
               </div>
               <div style={{ display: 'flex', gap: 6 }}>
                 <button onClick={() => startEdit(id, p)} style={smallBtn}>Bearbeiten</button>
+                <button onClick={() => toggleWithdrawn(id, p.withdrawn)} style={{ ...smallBtn, color: p.withdrawn ? C.green : C.red }}>{p.withdrawn ? 'WD aufheben' : 'Aufgegeben (WD)'}</button>
                 <button onClick={() => toggleDisqualified(id, p.disqualified)} style={{ ...smallBtn, color: p.disqualified ? C.green : C.red }}>{p.disqualified ? 'DQ aufheben' : 'Disqualifizieren'}</button>
                 <button onClick={() => removePlayer(id)} style={{ ...smallBtn, color: C.red }}>Entfernen</button>
               </div>
@@ -1720,9 +1762,11 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
   // scrollt dabei wirklich LANGSAM und gleichmäßig nach unten (eigene Animation statt Browser-
   // "smooth", das oft zu schnell wirkt wie ein Sprung), bevor zur nächsten Klasse gewechselt wird.
   // Ein manueller Klick auf eine Klasse funktioniert jederzeit und setzt die Rotation von dort fort.
-  const AUTO_DWELL_MS = 14000;
-  const AUTO_SCROLL_DURATION_MS = 9000;
-  const AUTO_SCROLL_START_DELAY_MS = 1500;
+  // Auf Wunsch aus dem laufenden Turnier halbiert: bei großen Konkurrenzen (AK30, AK50 mit vielen
+  // Spielern) war das Scrollen/Weiterschalten deutlich zu schnell.
+  const AUTO_DWELL_MS = 28000;
+  const AUTO_SCROLL_DURATION_MS = 18000;
+  const AUTO_SCROLL_START_DELAY_MS = 3000;
   useEffect(() => {
     if (!publicOnly || classIds.length <= 1) return;
     let cancelled = false;
@@ -1870,15 +1914,19 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
     const cmNettoRaw = (showNettoCM && isNettoCMPlayer) ? stablefordTotalsAcrossRounds(id, p.hcp, effectiveTeeFor(p), classRounds).netPts : null;
     const cmNettoBaselineRow = classRounds.length * m.holes * 2;
     const cmNettoDiff = cmNettoRaw === null ? null : cmNettoRaw - cmNettoBaselineRow;
+    // Immer BEIDE Metriken berechnen (Zählspiel Brutto UND Stableford-Punkte), damit jede Klasse
+    // ihre eigene Wertungslogik nutzen kann – z. B. spielt Jugend laut PC Caddy Stableford,
+    // Herren/Damen/AK dagegen Zählspiel – unabhängig vom allgemeinen Turnier-Scoring-Modus.
+    const stbl = stablefordTotalsAcrossRounds(id, p.hcp, effectiveTeeFor(p), classRounds);
     if (isStableford) {
-      const { grossPts, netPts, gbe } = stablefordTotalsAcrossRounds(id, p.hcp, effectiveTeeFor(p), classRounds);
+      const { grossPts, netPts, gbe } = stbl;
       return { id, ...p, effClasses, grossPts, netPts, gbe, cmNettoRaw, cmNettoDiff, thru: holesPlayed(thruScores) };
     }
     const { gross, par } = totalsAcrossRounds(id, classRounds);
     const grossToPar = gross === null ? null : gross - par;
     const net = gross === null ? null : Math.round(gross - courseHandicapFor(p.hcp, effectiveTeeFor(p), m.holes));
     const netToPar = net === null ? null : net - par;
-    return { id, ...p, effClasses, gross, grossToPar, net, netToPar, cmNettoRaw, cmNettoDiff, thru: holesPlayed(thruScores) };
+    return { id, ...p, effClasses, gross, grossToPar, net, netToPar, grossPts: stbl.grossPts, netPts: stbl.netPts, cmNettoRaw, cmNettoDiff, thru: holesPlayed(thruScores) };
   });
 
   const fmtToPar = (v) => v === null ? '–' : v === 0 ? 'E' : v > 0 ? '+' + v : String(v);
@@ -1903,11 +1951,12 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
   const activeBruttoClass = bruttoClasses.find(c => c.id === activeClass);
   const activeHcpClass = hcpClassesWithPrize.find(c => c.id === activeClass);
 
-  // Disqualifizierte Spieler rutschen bei jeder Sortierung ans Ende ihrer Klasse, unabhängig vom
-  // eigentlichen Sortierkriterium – der zuletzt eingetragene Score bleibt dabei unverändert sichtbar,
-  // nur die Platzierung wird ignoriert.
+  // Disqualifizierte UND "aufgegeben"-Spieler rutschen bei jeder Sortierung ans Ende ihrer Klasse,
+  // unabhängig vom eigentlichen Sortierkriterium – der zuletzt eingetragene Score bleibt dabei
+  // unverändert sichtbar, nur die Platzierung wird ignoriert.
+  const isOutOfRanking = (r) => !!r.disqualified || !!r.withdrawn;
   const dqAwareSort = (arr, compareFn) => arr.sort((a, b) => {
-    if (!!a.disqualified !== !!b.disqualified) return a.disqualified ? 1 : -1;
+    if (isOutOfRanking(a) !== isOutOfRanking(b)) return isOutOfRanking(a) ? 1 : -1;
     return compareFn(a, b);
   });
 
@@ -1920,10 +1969,15 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
     visibleRows = rows.filter(r => (r.classes && r.classes[0] === NETTO_CM_ID) || r.nettoCM);
     dqAwareSort(visibleRows, (a, b) => (b.cmNettoRaw ?? -1) - (a.cmNettoRaw ?? -1));
   } else if (m.classificationMode === 'fixed') {
-    // Feste Klassen (Herren/Damen/AK/Jugend) entscheiden nach Brutto. Ein Spieler kann dank
-    // Alters-Mehrfachwertung in mehreren AK-Klassen gleichzeitig auftauchen (effClasses).
+    // Feste Klassen entscheiden nach Brutto (Zählspiel) – AUSSER Jugend, die laut PC Caddy nach
+    // Stableford-Bruttopunkten gewertet wird. Ein Spieler kann dank Alters-Mehrfachwertung in
+    // mehreren AK-Klassen gleichzeitig auftauchen (effClasses).
     visibleRows = rows.filter(r => (r.effClasses || []).includes(activeClass));
-    dqAwareSort(visibleRows, (a, b) => (a.grossToPar ?? 999) - (b.grossToPar ?? 999));
+    if (activeClass === 'Jugend') {
+      dqAwareSort(visibleRows, (a, b) => (b.grossPts ?? -1) - (a.grossPts ?? -1));
+    } else {
+      dqAwareSort(visibleRows, (a, b) => (a.grossToPar ?? 999) - (b.grossToPar ?? 999));
+    }
   } else if (activeBruttoClass) {
     visibleRows = rows.filter(r => (isStableford ? r.grossPts !== null : r.gross !== null) && (!activeBruttoClass.gender || r.geschlecht === activeBruttoClass.gender));
     dqAwareSort(visibleRows, (a, b) => isStableford ? (b.grossPts ?? -1) - (a.grossPts ?? -1) : (a.grossToPar ?? 999) - (b.grossToPar ?? 999));
@@ -1956,14 +2010,14 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
     { bg: 'rgba(29,122,76,0.07)', color: C.ink, weight: 600, size: 15 },
   ];
   const prizeTierForRow = (i, row) => {
-    if (row && row.disqualified) return null; // Disqualifizierte bekommen nie eine Sieger-Hervorhebung
+    if (row && (row.disqualified || row.withdrawn)) return null; // DQ/WD bekommen nie eine Sieger-Hervorhebung
     if (excludedNote && i === 0) return null; // ausgeschlossener Spieler bekommt keinen Preisrang-Look
     const rank = excludedNote ? i - 1 : i;
     return rank < prizeCount ? PRIZE_TIERS[rank] : null;
   };
 
   return (
-    <div className="wrap" style={{ maxWidth: 620 }}>
+    <div className="wrap leaderboard-wrap">
       {myFlightToken && !publicOnly && (
         <a href={`?m=${myFlightToken}`} target="_blank" rel="noopener noreferrer" style={{
           display: 'block', textAlign: 'center', padding: '20px 0', marginBottom: 16,
@@ -2037,7 +2091,7 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
             <div key={r.id} onClick={() => setDetailPlayer(r.id)}
               style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 20px', background: tier ? tier.bg : 'transparent', borderBottom: `1px solid ${C.line}`, cursor: 'pointer' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-                <span style={{ fontSize: 13, color: r.disqualified ? C.red : C.muted, width: 24, fontWeight: 700 }}>{r.disqualified ? 'DQ' : i + 1}</span>
+                <span style={{ fontSize: 13, color: (r.disqualified || r.withdrawn) ? C.red : C.muted, width: 24, fontWeight: 700 }}>{r.disqualified ? 'DQ' : r.withdrawn ? 'WD' : i + 1}</span>
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: 7 }}>
                   <span style={{ fontSize: tier ? tier.size : 15, fontWeight: tier ? tier.weight : 500, color: tier ? tier.color : C.ink }}>{lastNameFirst(r.name)}{isStableford && activeHcpClass && r.id === bruttoLeaderIdFor(r.geschlecht) ? ' 🏆' : ''}</span>
                 </div>
@@ -2047,6 +2101,10 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
                   {activeClass === NETTO_CM_ID ? (
                     <div style={{ fontSize: tier ? tier.size : 16, fontWeight: tier ? tier.weight : 600, color: tier ? tier.color : C.ink }}>
                       {r.cmNettoRaw ?? 0} Pkt.
+                    </div>
+                  ) : activeClass === 'Jugend' ? (
+                    <div style={{ fontSize: tier ? tier.size : 16, fontWeight: tier ? tier.weight : 600, color: tier ? tier.color : C.ink }}>
+                      {r.grossPts ?? 0} Pkt.
                     </div>
                   ) : isStableford ? (
                     <div style={{ fontSize: tier ? tier.size : 16, fontWeight: tier ? tier.weight : 600, color: tier ? tier.color : C.ink }}>
@@ -2102,13 +2160,14 @@ function ScoreDetailModal({ tournament, playerId, initialRound, findPlayerRoundS
   const courseHcp = courseHandicapFor(p.hcp, effectiveTeeFor(p), holes);
 
   // Gesamtstand über alle Runden der Klasse, damit er oben neben dem Namen angezeigt werden kann.
-  // Netto-Klubmeisterschaft-Spieler rechnen IMMER nach Stableford-Punkten (rohe, aufsummierte Punktzahl),
-  // unabhängig vom allgemeinen Turnier-Scoring-Modus (der bei Clubmeisterschaft ja Zählspiel ist) –
-  // gleicher Fix wie in der Live-Rangliste.
+  // Netto-Klubmeisterschaft- UND Jugend-Spieler rechnen IMMER nach Stableford-Punkten (rohe,
+  // aufsummierte Punktzahl), unabhängig vom allgemeinen Turnier-Scoring-Modus (der bei
+  // Clubmeisterschaft für Herren/Damen/AK ja Zählspiel ist) – gleicher Fix wie in der Live-Rangliste.
   const isNettoCMPlayer = (p.classes && p.classes[0] === NETTO_CM_ID) || p.nettoCM;
+  const isJugendPlayer = playerClass === 'Jugend';
   const totalDisplay = (() => {
-    const isStbl = isNettoCMPlayer || m.scoringMode === 'stableford';
-    let gross = 0, parSum = 0, pts = 0, any = false;
+    const isStbl = isNettoCMPlayer || isJugendPlayer || m.scoringMode === 'stableford';
+    let gross = 0, parSum = 0, grossPts = 0, netPts = 0, any = false;
     modalRounds.forEach(r => {
       const s = findPlayerRoundScores(playerId, r.id);
       Object.entries(s).forEach(([hiStr, val]) => {
@@ -2116,15 +2175,22 @@ function ScoreDetailModal({ tournament, playerId, initialRound, findPlayerRoundS
         any = true;
         const hi = Number(hiStr);
         if (val === STRICH) return;
-        gross += Number(val);
+        const score = Number(val);
+        gross += score;
         parSum += pars[hi] || 0;
-        const net = Number(val) - strokesOnHole(courseHcp, si[hi], holes);
-        pts += stablefordPoints(net - pars[hi]);
+        grossPts += stablefordPoints(score - (pars[hi] || 0));
+        const net = score - strokesOnHole(courseHcp, si[hi], holes);
+        netPts += stablefordPoints(net - (pars[hi] || 0));
       });
     });
     if (!any) return null;
-    if (isStbl) return { text: `${pts} Pkt.`, color: C.ink };
-    // Bei Zählspiel (Herren/Damen/AK/Jugend) zählt IMMER Brutto, exakt wie in der Live-Rangliste –
+    if (isStbl) {
+      // Netto-Clubmeisterschaft zählt Netto-Punkte (Vorgabe wird abgezogen), Jugend dagegen
+      // Brutto-Punkte (rohe Schläge gegen Par, keine Vorgabe-Verrechnung).
+      const pts = isNettoCMPlayer ? netPts : grossPts;
+      return { text: `${pts} Pkt.`, color: C.ink };
+    }
+    // Bei Zählspiel (Herren/Damen/AK) zählt IMMER Brutto, exakt wie in der Live-Rangliste –
     // nicht Netto. Vorher stand hier fälschlich das Netto-Ergebnis (Brutto minus Vorgabe).
     const toPar = gross - parSum;
     return {
@@ -2143,7 +2209,7 @@ function ScoreDetailModal({ tournament, playerId, initialRound, findPlayerRoundS
 
   // Netto-Klubmeisterschaft-Spieler bekommen die kleine Netto-Punkte-Zahl pro Loch immer angezeigt,
   // unabhängig vom allgemeinen Turnier-Scoring-Modus (der bei Clubmeisterschaft ja Zählspiel ist).
-  const isStableford = isNettoCMPlayer || m.scoringMode === 'stableford';
+  const isStableford = isNettoCMPlayer || isJugendPlayer || m.scoringMode === 'stableford';
 
   const renderBlock = (startIdx, count) => {
     const cells = [];
@@ -2155,21 +2221,25 @@ function ScoreDetailModal({ tournament, playerId, initialRound, findPlayerRoundS
       if (hasScore) { blockSum += Number(s); blockHasAny = true; }
       const diff = hasScore ? Number(s) - pars[i] : null;
       const st = hasScore ? scoreStyle(diff) : { bg: 'transparent', col: C.muted };
-      // Netto-Stableford-Punkte klein in der Ecke, damit man auf einen Blick nachvollziehen kann,
-      // wie sich die Nettopunkte pro Loch zusammensetzen (Vorgabe-Schlag + Punkte-Skala).
-      let netPtsBadge = null;
+      // Stableford-Punkte klein in der Ecke, damit man auf einen Blick nachvollziehen kann, wie sich
+      // die Punkte pro Loch zusammensetzen. Netto-Clubmeisterschaft: Netto-Punkte (Vorgabe-Schlag
+      // verrechnet). Jugend: Brutto-Punkte (keine Vorgabe-Verrechnung).
+      let ptsBadge = null;
       if (isStableford && hasScore) {
-        const strokes = strokesOnHole(courseHcp, si[i], holes);
-        const netScore = Number(s) - strokes;
-        const netPts = stablefordPoints(netScore - pars[i]);
-        netPtsBadge = netPts;
+        if (isNettoCMPlayer) {
+          const strokes = strokesOnHole(courseHcp, si[i], holes);
+          const netScore = Number(s) - strokes;
+          ptsBadge = stablefordPoints(netScore - pars[i]);
+        } else {
+          ptsBadge = stablefordPoints(Number(s) - pars[i]);
+        }
       }
       cells.push(
         <td key={i} style={{ padding: '7px 2px', textAlign: 'center' }}>
           <span style={{ position: 'relative', display: 'inline-flex', width: 26, height: 26, alignItems: 'center', justifyContent: 'center', borderRadius: '50%', background: st.bg, color: st.col, fontWeight: 500, fontSize: 13 }}>
             {hasScore ? s : struck ? '✕' : '–'}
-            {netPtsBadge !== null && (
-              <span style={{ position: 'absolute', bottom: -3, right: -3, fontSize: 8, fontWeight: 600, color: C.accent }}>{netPtsBadge}</span>
+            {ptsBadge !== null && (
+              <span style={{ position: 'absolute', bottom: -3, right: -3, fontSize: 8, fontWeight: 600, color: C.accent }}>{ptsBadge}</span>
             )}
           </span>
         </td>
@@ -2278,6 +2348,9 @@ function SoloEntry({ tournament, flightId, reload, isAdmin }) {
   // Eine Runde ist für einen Spieler erst freigeschaltet, wenn seine eigene vorherige Runde
   // komplett eingetragen ist – Runde 3 z. B. darf nicht vor Abschluss von Runde 1+2 bespielt werden.
   const isRoundUnlockedForPlayer = (p, roundId) => {
+    // Admin-gesetzte Runden-Sperre (z. B. gestrige Runde sperren) hat Vorrang – gilt nicht für den
+    // Admin-Testzugriff selbst (isAdmin).
+    if (!isAdmin && (m.lockedRounds || []).includes(roundId)) return false;
     const ids = playerRoundIds(p);
     const idx = ids.indexOf(roundId);
     if (idx <= 0) return true;
@@ -2395,17 +2468,21 @@ function SoloEntry({ tournament, flightId, reload, isAdmin }) {
             const playerSi = courseFor(m.holes).si[hole - 1];
             const unlocked = isRoundUnlockedForPlayer(p, round);
             if (!unlocked) {
+              const adminLockedThisRound = !isAdmin && (m.lockedRounds || []).includes(round);
               return (
                 <div key={p.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', background: C.board, borderRadius: 8, opacity: 0.6 }}>
                   <div>
                     <div style={{ fontSize: 13, fontWeight: 500 }}>{p.name}</div>
                     <div style={{ fontSize: 10, color: C.muted }}>Hcp {p.hcp} · Tee {effectiveTeeFor(p)}</div>
                   </div>
-                  <span style={{ fontSize: 11, color: C.muted }}>🔒 vorherige Runde noch offen</span>
+                  <span style={{ fontSize: 11, color: C.muted }}>{adminLockedThisRound ? '🔒 Runde vom Admin gesperrt' : '🔒 vorherige Runde noch offen'}</span>
                 </div>
               );
             }
             const isNettoCMPlayer = (p.classes && p.classes[0] === NETTO_CM_ID) || p.nettoCM;
+            // Jugend spielt (wie Netto-Clubmeisterschaft) nach Stableford – Strich ("Loch aufgeben",
+            // 0 Punkte) macht daher hier genauso Sinn, bei reinem Zählspiel (Herren/Damen/AK) nicht.
+            const isStablefordPlayer = isNettoCMPlayer || (p.classes && p.classes[0] === 'Jugend');
             return (
               <div key={p.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', background: C.board, borderRadius: 8 }}>
                 <div>
@@ -2423,7 +2500,7 @@ function SoloEntry({ tournament, flightId, reload, isAdmin }) {
                       <button onClick={() => setScore(p.id, Math.max(1, cur - 1))} style={smallCircleBtn}>−</button>
                       <span style={{ fontSize: 18, fontWeight: 600, minWidth: 20, textAlign: 'center' }}>{cur}</span>
                       <button onClick={() => setScore(p.id, cur + 1)} style={smallCircleBtn}>+</button>
-                      {isNettoCMPlayer && (
+                      {isStablefordPlayer && (
                         <button onClick={() => { if (window.confirm(`${p.name}: Loch ${hole} wirklich als Strich (aufgegeben, 0 Punkte) eintragen?`)) setScore(p.id, STRICH); }} title="Loch aufgeben" style={{ ...smallBtn, padding: '5px 8px', fontSize: 11, color: C.muted, marginLeft: 4 }}>Strich</button>
                       )}
                     </>
