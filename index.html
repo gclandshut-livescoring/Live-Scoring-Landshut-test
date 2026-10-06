@@ -78,9 +78,12 @@ async function lookupMember(name) {
   if (!name) return null;
   try { return await fbGet('members/' + memberKey(name)); } catch (e) { return null; }
 }
-async function upsertMember(name, geburtsjahr, geschlecht) {
-  if (!name || !geburtsjahr) return;
-  try { await fbPatch('members/' + memberKey(name), { name, geburtsjahr, geschlecht }); } catch (e) { /* Stammdaten sind nur ein Komfort-Cache, Fehler hier dürfen die Spieleranlage nicht blockieren */ }
+async function upsertMember(name, geburtsjahr, geschlecht, hcp) {
+  if (!name) return;
+  const rec = { name, geschlecht: geschlecht || 'm' };
+  if (geburtsjahr) rec.geburtsjahr = geburtsjahr;
+  if (hcp !== undefined && hcp !== null && hcp !== '' && !isNaN(Number(hcp))) rec.hcp = Number(hcp);
+  try { await fbPatch('members/' + memberKey(name), rec); } catch (e) { /* Spielerdatenbank ist nur ein Komfort-Speicher, Fehler hier dürfen die Spieleranlage nicht blockieren */ }
 }
 
 // Farben (angelehnt an Ryder-Cup-Tool, eigenständige Palette fürs Zählspiel)
@@ -657,6 +660,11 @@ function TournamentSetup({ tournament, reload }) {
   // Link/Passwort Spieler evtl. noch offen/gespeichert haben) vor versehentlichen nachträglichen
   // Änderungen zu schützen, während heutige Runden weiterhin ganz normal offen für Eingaben bleiben.
   const [lockedRounds, setLockedRounds] = useState(m.lockedRounds || []);
+  const clearRoundLocks = async () => {
+    setLockedRounds([]);
+    await fbPatch('tournament/meta', { lockedRounds: [] });
+    await reload();
+  };
   const toggleRoundLock = async (rid) => {
     const next = lockedRounds.includes(rid) ? lockedRounds.filter(x => x !== rid) : [...lockedRounds, rid];
     setLockedRounds(next);
@@ -708,9 +716,15 @@ function TournamentSetup({ tournament, reload }) {
         </button>
       </div>
 
-      {rounds.length > 1 && (
+      {(rounds.length > 1 || lockedRounds.length > 0) && (
         <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20 }}>
           <div style={{ fontSize: 14, fontWeight: 600, color: C.inkDim, marginBottom: 4 }}>Einzelne Runde(n) sperren</div>
+          {lockedRounds.length > 0 && (
+            <div style={{ fontSize: 12, color: C.red, marginBottom: 10, fontWeight: 600 }}>
+              Aktuell gesperrte Runde(n): {lockedRounds.join(', ')} – gilt für Spieler-Eingaben, egal in welchem Turnier das einmal gesetzt wurde.
+              <button onClick={clearRoundLocks} style={{ ...smallBtn, marginLeft: 10 }}>Alle Rundensperren aufheben</button>
+            </div>
+          )}
           <div style={{ fontSize: 12, color: C.muted, marginBottom: 10 }}>Zusätzlich zur globalen Sperre oben: sperrt NUR die ausgewählte(n) Runde(n) für Spieler-Eingaben (z. B. die gestrige Runde, deren Link/Passwort manche Spieler noch offen haben) – andere Runden bleiben unabhängig davon normal bearbeitbar. Du selbst (Tab "Scores") bist nie betroffen.</div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             {rounds.map(r => (
@@ -921,6 +935,15 @@ function PlayerAdmin({ tournament, reload }) {
   const [editDraft, setEditDraft] = useState(null);
   const [sortKey, setSortKey] = useState('name');
   const [sortDir, setSortDir] = useState(1);
+  // Spielerdatenbank (liegt unter "members", getrennt vom Turnier): hier stehen alle bisher erfassten
+  // Spieler dauerhaft – ins Turnier (und damit in Rangliste/Flights) kommt nur, wer unter "Spieler"
+  // dieses Turniers steht.
+  const [memberDb, setMemberDb] = useState(null);
+  const [showDbPicker, setShowDbPicker] = useState(false);
+  const [dbSearch, setDbSearch] = useState('');
+  const [dbSelected, setDbSelected] = useState({});
+  const [dbBusy, setDbBusy] = useState(false);
+  const [dbMsg, setDbMsg] = useState(null);
 
   // Tee wird automatisch aus Geschlecht + Klasse abgeleitet. Bei fester Klassifizierung
   // (Clubmeisterschaft) gilt: AK-Klassen immer nach Geschlecht (Gelb/Rot), Herren/Damen/Jugend
@@ -946,7 +969,7 @@ function PlayerAdmin({ tournament, reload }) {
       if (existing && existing.geburtsjahr) geb = existing.geburtsjahr;
     }
     await fbPatch('tournament/players/' + id, { name, hcp: Number(hcp), classes: cls ? [cls] : [], geschlecht, geburtsjahr: geb || null, nettoCM: cls === NETTO_CM_ID, tee: teeForGeschlecht(geschlecht, cls, cls === NETTO_CM_ID, hcp) });
-    if (geb) await upsertMember(name, geb, geschlecht);
+    await upsertMember(name, geb, geschlecht, hcp);
     setName(''); setHcp(''); setGeburtsjahr('');
     await reload();
   };
@@ -954,6 +977,100 @@ function PlayerAdmin({ tournament, reload }) {
   const removePlayer = async (id) => {
     await fbPut('tournament/players/' + id, null);
     await reload();
+  };
+
+  const loadMemberDb = async () => {
+    try { setMemberDb((await fbGet('members')) || {}); } catch (e) { setMemberDb({}); }
+  };
+
+  // Sichert ALLE Spieler dieses Turniers in die Spielerdatenbank (Name, Geschlecht, Geburtsjahr, letztes
+  // Handicap, letzte Klasse) und entfernt sie danach aus dem Turnier – damit ein neues Turnier mit
+  // leerer Spielerliste startet, die Daten aber erhalten bleiben. Gelöscht wird erst, nachdem die
+  // Sicherung per Rücklesen bestätigt wurde. Nur möglich, solange es noch keine Flights/Scores gibt.
+  const archiveAndClearPlayers = async () => {
+    const entries = Object.entries(players);
+    if (entries.length === 0) return;
+    const hasFlights = Object.keys((tournament && tournament.flights) || {}).length > 0;
+    const hasScores = Object.keys((tournament && tournament.scores) || {}).length > 0;
+    if (hasFlights || hasScores) {
+      alert('In diesem Turnier gibt es noch Flights oder Scores. Bitte zuerst die Flights löschen und die Scores zurücksetzen, sonst würden Flights ohne Spieler zurückbleiben.');
+      return;
+    }
+    if (!window.confirm(`${entries.length} Spieler zuerst in die Spielerdatenbank sichern und danach aus diesem Turnier entfernen?\n\nIn der Rangliste und bei den Flights erscheint dann niemand mehr. Die Spieler lassen sich jederzeit aus der Spielerdatenbank wieder ins Turnier übernehmen.`)) return;
+    setDbBusy(true); setDbMsg(null);
+    try {
+      const existingDb = (await fbGet('members')) || {};
+      const upserts = {};
+      entries.forEach(([id, p]) => {
+        if (!p.name) return;
+        const k = memberKey(p.name);
+        const rec = { ...(existingDb[k] || {}), name: p.name, geschlecht: p.geschlecht || 'm' };
+        if (p.geburtsjahr) rec.geburtsjahr = p.geburtsjahr;
+        if (p.hcp !== undefined && p.hcp !== null && p.hcp !== '' && !isNaN(Number(p.hcp))) rec.hcp = Number(p.hcp);
+        const klasse = p.classes && p.classes[0];
+        if (klasse) rec.letzteKlasse = klasse;
+        upserts[k] = rec;
+      });
+      await fbPatch('members', upserts);
+      const check = (await fbGet('members')) || {};
+      const missing = Object.keys(upserts).filter(k => !check[k]);
+      if (missing.length > 0) {
+        setDbMsg({ ok: false, text: `Sicherung unvollständig (${missing.length} Einträge fehlen) – es wurde nichts gelöscht.` });
+        setDbBusy(false);
+        return;
+      }
+      await fbPut('tournament/players', null);
+      setMemberDb(check);
+      setDbMsg({ ok: true, text: `${Object.keys(upserts).length} Spieler in der Spielerdatenbank gesichert und aus dem Turnier entfernt.` });
+      await reload();
+    } catch (e) {
+      setDbMsg({ ok: false, text: 'Fehler: ' + e.message + ' – es wurde nichts gelöscht.' });
+    }
+    setDbBusy(false);
+  };
+
+  const toggleDbSelect = (k, mm) => setDbSelected(s => {
+    const n = { ...s };
+    if (Object.prototype.hasOwnProperty.call(n, k)) delete n[k];
+    else n[k] = (mm.hcp !== undefined && mm.hcp !== null) ? String(mm.hcp) : '';
+    return n;
+  });
+
+  // Übernimmt die ausgewählten Spieler aus der Spielerdatenbank ins Turnier (mit dem hier eingetragenen,
+  // aktuellen Handicap) und merkt sich das neue Handicap in der Datenbank.
+  const addSelectedFromDb = async () => {
+    const keys = Object.keys(dbSelected);
+    if (keys.length === 0 || !memberDb) return;
+    const missingHcp = keys.filter(k => dbSelected[k] === '' || isNaN(Number(dbSelected[k])));
+    if (missingHcp.length > 0) { alert('Bitte für alle ausgewählten Spieler ein aktuelles Handicap eintragen.'); return; }
+    setDbBusy(true); setDbMsg(null);
+    try {
+      const already = new Set(Object.values(players).map(p => memberKey(p.name)));
+      const updates = {};
+      const hcpUpdates = {};
+      let added = 0;
+      keys.forEach(k => {
+        const mm = memberDb[k];
+        if (!mm || already.has(k)) return;
+        const g = mm.geschlecht || 'm';
+        const h = Number(dbSelected[k]);
+        const cls0 = meta.classificationMode === 'fixed' ? [mm.letzteKlasse || FIXED_CLASSES[0]] : [];
+        updates[newId()] = { name: mm.name, hcp: h, classes: cls0, geschlecht: g, geburtsjahr: mm.geburtsjahr || null, nettoCM: cls0[0] === NETTO_CM_ID, tee: teeForGeschlecht(g, cls0[0] || '', cls0[0] === NETTO_CM_ID, h) };
+        hcpUpdates[k + '/hcp'] = h;
+        added++;
+      });
+      if (added > 0) {
+        await fbPatch('tournament/players', updates);
+        await fbPatch('members', hcpUpdates);
+      }
+      setDbSelected({});
+      setDbMsg({ ok: true, text: `${added} Spieler ins Turnier übernommen.` });
+      await loadMemberDb();
+      await reload();
+    } catch (e) {
+      setDbMsg({ ok: false, text: 'Fehler: ' + e.message });
+    }
+    setDbBusy(false);
   };
 
   // Disqualifikation: der zuletzt eingetragene Score bleibt exakt so stehen, wie er ist (keine
@@ -1083,7 +1200,7 @@ function PlayerAdmin({ tournament, reload }) {
         const id = newId();
         const finalCls = pNettoCM ? NETTO_CM_ID : pcls;
         playerUpdates[id] = { name: pname, hcp: Number(phcp), classes: finalCls ? [finalCls] : [], geschlecht: pg, geburtsjahr: pgeb, nettoCM: pNettoCM, tee: teeForGeschlecht(pg, finalCls, pNettoCM, phcp) };
-        if (pgeb) memberUpserts[memberKey(pname)] = { name: pname, geburtsjahr: pgeb, geschlecht: pg };
+        memberUpserts[memberKey(pname)] = { ...(memberDb[memberKey(pname)] || {}), name: pname, geschlecht: pg, ...(pgeb ? { geburtsjahr: pgeb } : {}), ...((phcp !== '' && !isNaN(Number(phcp))) ? { hcp: Number(phcp) } : {}) };
         if (pflight) {
           if (!flightGroups[pflight]) flightGroups[pflight] = [];
           flightGroups[pflight].push(id);
@@ -1111,6 +1228,64 @@ function PlayerAdmin({ tournament, reload }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20 }}>
+        <div style={{ fontSize: 14, fontWeight: 600, color: C.inkDim, marginBottom: 4 }}>🗂️ Spielerdatenbank</div>
+        <div style={{ fontSize: 12, color: C.muted, marginBottom: 12 }}>
+          Alle bisher erfassten Spieler liegen dauerhaft getrennt vom Turnier in der Datenbank (Name, Geschlecht, Geburtsjahr, letztes Handicap). In Rangliste und Flights erscheint nur, wer unten unter dem Turnier steht.
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button onClick={() => { const next = !showDbPicker; setShowDbPicker(next); if (next && memberDb === null) loadMemberDb(); }} style={smallBtn}>
+            {showDbPicker ? 'Auswahl schließen' : '➕ Spieler aus Datenbank ins Turnier übernehmen'}
+          </button>
+          {Object.keys(players).length > 0 && (
+            <button onClick={archiveAndClearPlayers} disabled={dbBusy} style={{ ...smallBtn, color: C.red, opacity: dbBusy ? 0.5 : 1 }}>
+              Turnier-Spieler sichern & aus Turnier entfernen
+            </button>
+          )}
+        </div>
+        {dbMsg && <div style={{ fontSize: 12, fontWeight: 600, marginTop: 10, color: dbMsg.ok ? C.green : C.red }}>{dbMsg.text}</div>}
+        {showDbPicker && (
+          <div style={{ marginTop: 14 }}>
+            {memberDb === null ? <div style={{ fontSize: 12, color: C.muted }}>Lädt…</div> : (() => {
+              const inTournament = new Set(Object.values(players).map(p => memberKey(p.name)));
+              const q = dbSearch.trim().toLowerCase();
+              const list = Object.entries(memberDb)
+                .filter(([k, mm]) => mm && mm.name && (!q || mm.name.toLowerCase().includes(q)))
+                .sort((a, b) => a[1].name.localeCompare(b[1].name, 'de'));
+              const selCount = Object.keys(dbSelected).length;
+              return (
+                <div>
+                  <input placeholder={`Name suchen… (${Object.keys(memberDb).length} Spieler in der Datenbank)`} value={dbSearch} onChange={e => setDbSearch(e.target.value)} style={{ ...inputStyle, width: '100%', marginBottom: 8 }} />
+                  <div style={{ maxHeight: 340, overflowY: 'auto', border: `1px solid ${C.line}`, borderRadius: 8 }}>
+                    {list.length === 0 && <div style={{ padding: 16, textAlign: 'center', fontSize: 12, color: C.muted }}>Keine Treffer in der Spielerdatenbank.</div>}
+                    {list.map(([k, mm]) => {
+                      const isIn = inTournament.has(k);
+                      const sel = Object.prototype.hasOwnProperty.call(dbSelected, k);
+                      return (
+                        <div key={k} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 12px', borderBottom: `1px solid ${C.line}`, opacity: isIn ? 0.5 : 1, background: sel ? C.accentTint : 'transparent' }}>
+                          <input type="checkbox" checked={sel} disabled={isIn} onChange={() => toggleDbSelect(k, mm)} />
+                          <span style={{ flex: 1, fontSize: 13 }}>{mm.name}</span>
+                          <span style={{ fontSize: 11, color: C.muted }}>{mm.geschlecht === 'w' ? 'Dame' : 'Herr'}{mm.geburtsjahr ? ` · *${mm.geburtsjahr}` : ''}</span>
+                          {isIn ? <span style={{ fontSize: 11, color: C.muted }}>im Turnier</span> : sel ? (
+                            <input type="number" step="0.1" placeholder="Hcp" value={dbSelected[k]} onChange={e => setDbSelected(s => ({ ...s, [k]: e.target.value }))} style={{ ...inputStyle, width: 76 }} />
+                          ) : <span style={{ fontSize: 11, color: C.muted }}>{mm.hcp !== undefined && mm.hcp !== null ? `zuletzt ${mm.hcp}` : ''}</span>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div style={{ display: 'flex', gap: 10, marginTop: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <button onClick={addSelectedFromDb} disabled={dbBusy || selCount === 0} style={{ ...smallBtn, background: C.ink, color: '#fff', border: 'none', opacity: (dbBusy || selCount === 0) ? 0.5 : 1 }}>
+                      {selCount} ausgewählte Spieler ins Turnier übernehmen
+                    </button>
+                    <span style={{ fontSize: 11, color: C.muted }}>Bitte das aktuelle Handicap eintragen – es wird mitgespeichert.</span>
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        )}
+      </div>
+
       <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
           <span style={{ fontSize: 13, color: C.inkDim }}>
