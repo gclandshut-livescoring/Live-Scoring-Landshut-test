@@ -1168,6 +1168,7 @@ function PlayerAdmin({ tournament, reload }) {
       const lines = text.split(/\r?\n/).filter(l => l.trim());
       const playerUpdates = {};
       const flightGroups = {}; // flightName -> [playerId, ...]
+      const flightTimes = {};
       const isFixed = meta.classificationMode === 'fixed';
       // Stammdaten einmal komplett laden, um fehlende Geburtsjahre pro Zeile automatisch zu ergänzen.
       let memberDb = {};
@@ -1192,6 +1193,7 @@ function PlayerAdmin({ tournament, reload }) {
           idx++;
         }
         const pflight = parts[idx];
+        const ptee = parts[idx + 1] ? /^(\d{1,2})[:.](\d{2})$/.exec(parts[idx + 1]) : null;
         if (!pname || phcp === undefined) return;
         if (!pgeb) {
           const rec = memberDb[memberKey(pname)];
@@ -1204,6 +1206,7 @@ function PlayerAdmin({ tournament, reload }) {
         if (pflight) {
           if (!flightGroups[pflight]) flightGroups[pflight] = [];
           flightGroups[pflight].push(id);
+          if (ptee && !flightTimes[pflight]) flightTimes[pflight] = `${ptee[1].padStart(2, '0')}:${ptee[2]}`;
         }
       });
       await fbPatch('tournament/players', playerUpdates);
@@ -1214,7 +1217,7 @@ function PlayerAdmin({ tournament, reload }) {
       const flightUpdates = {};
       Object.entries(flightGroups).forEach(([flightName, playerIds]) => {
         const fid = newId();
-        flightUpdates[fid] = { name: flightName, playerIds, token: genToken(), password: genPassword() };
+        flightUpdates[fid] = { name: flightName, playerIds, token: genToken(), password: genPassword(), ...(flightTimes[flightName] ? { teeTime: flightTimes[flightName] } : {}) };
       });
       if (Object.keys(flightUpdates).length > 0) {
         await fbPatch('tournament/flights', flightUpdates);
@@ -1289,7 +1292,7 @@ function PlayerAdmin({ tournament, reload }) {
       <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: 20 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
           <span style={{ fontSize: 13, color: C.inkDim }}>
-            CSV hochladen: name,handicap{meta.classificationMode === 'fixed' ? ',klasse' : ''},geschlecht,geburtsjahr,nettocm,flight
+            CSV hochladen: name,handicap{meta.classificationMode === 'fixed' ? ',klasse' : ''},geschlecht,geburtsjahr,nettocm,flight,teetime
             <br /><span style={{ fontSize: 11 }}>geschlecht = m/w (optional, Standard m). geburtsjahr optional, aber wichtig für die automatische AK-Mehrfachwertung (z.B. 1960) – einmal erfasste Geburtsjahre werden für zukünftige Uploads automatisch anhand des Namens gemerkt, falls sie in einer neuen Datei fehlen. nettocm = ja/nein (optional, Standard nein) – Anmeldung zur separaten Netto-Clubmeisterschaft. Flight-Spalte optional – gleicher Flight-Name gruppiert automatisch, Link + Passwort werden erzeugt.</span>
           </span>
           <button onClick={() => fileRef.current.click()} style={smallBtn}>Datei wählen</button>
@@ -1426,7 +1429,7 @@ function computeClassRanking(tournament, classId) {
   return rows.filter(r => r.effClasses.includes(classId) && r.grossToPar !== null).sort((a, b) => a.grossToPar - b.grossToPar);
 }
 
-function FlightShareButtons({ flightName, link, password, tournamentName, publicLink }) {
+function FlightShareButtons({ flightName, link, password, tournamentName, publicLink, teeTime }) {
   const [copied, setCopied] = useState(false);
   // Onboarding-Nachricht nach Walters Vorlage, ergänzt um Link/Passwort zur Eingabe und den
   // Zuschauer-Link zur Live-Rangliste.
@@ -1434,6 +1437,7 @@ function FlightShareButtons({ flightName, link, password, tournamentName, public
     `Willkommen bei der${tournamentName ? ` ${tournamentName}` : ''}!`,
     `In diesem Jahr haben wir erstmalig ein Live-Scoring.`,
     ``,
+    ...(teeTime ? [`Eure Startzeit: ${teeTime} Uhr`, ``] : []),
     `Ein Spieler des Flights kann mit diesem Link die Scores eingeben:`,
     link,
     `Passwort: ${password}`,
@@ -1562,6 +1566,13 @@ function FlightAdmin({ tournament, reload }) {
 
   // Flight bearbeiten (Spieler-Zusammensetzung, Runden) – Link + Passwort bleiben dabei unverändert,
   // damit bereits verschickte Links gültig bleiben. Wichtig z. B. wenn ein Spieler kurzfristig aufgibt.
+  // Tee-Time eines Flights (Format HH:MM) – wird in der Live-Ansicht bei "Loch" gezeigt, solange der
+  // Flight noch nicht gestartet ist, und in WhatsApp-Nachricht und PDF mit ausgegeben.
+  const setFlightTeeTime = async (id, val) => {
+    await fbPatch('tournament/flights/' + id, { teeTime: val || null });
+    await reload();
+  };
+
   const startEditFlight = (id, f) => {
     setEditingFlightId(id);
     setEditName(f.name);
@@ -1637,11 +1648,16 @@ function FlightAdmin({ tournament, reload }) {
         doc.setFontSize(24);
         doc.setFont(undefined, 'bold');
         doc.text(f.name, 105, 30, { align: 'center' });
+        if (f.teeTime) {
+          doc.setFontSize(16);
+          doc.setFont(undefined, 'normal');
+          doc.text(`Tee-Time: ${f.teeTime} Uhr`, 105, 40, { align: 'center' });
+        }
 
         doc.setFontSize(14);
         doc.setFont(undefined, 'normal');
         const playerNames = (f.playerIds || []).map(pid => players[pid]?.name).filter(Boolean);
-        let y = 45;
+        let y = f.teeTime ? 52 : 45;
         playerNames.forEach(pname => {
           doc.text(pname, 105, y, { align: 'center' });
           y += 8;
@@ -1673,6 +1689,8 @@ function FlightAdmin({ tournament, reload }) {
   const [autoClassId, setAutoClassId] = useState('');
   const [autoFlightSize, setAutoFlightSize] = useState(3);
   const [autoNamePrefix, setAutoNamePrefix] = useState('Flight');
+  const [autoFirstTee, setAutoFirstTee] = useState('');
+  const [autoTeeInterval, setAutoTeeInterval] = useState(10);
   const [autoRounds, setAutoRounds] = useState(allRounds.map(r => r.id));
   const toggleAutoRound = (rid) => setAutoRounds(sel => sel.includes(rid) ? sel.filter(x => x !== rid) : [...sel, rid]);
 
@@ -1681,6 +1699,15 @@ function FlightAdmin({ tournament, reload }) {
     : [...(meta.bruttoClasses || [{ id: 'Brutto' }]).map(c => c.id), ...(meta.hcpClasses || []).map(c => c.id)];
 
   const unassignedPlayers = Object.entries(players).filter(([id]) => !assignedElsewhere(id, autoRounds)).map(([id, p]) => ({ id, ...p }));
+
+  // Tee-Time des n-ten Flights (0-basiert) aus erster Tee-Time + Abstand in Minuten; ohne erste Tee-Time keine.
+  const teeAt = (n) => {
+    if (!autoFirstTee) return null;
+    const [h, mi] = autoFirstTee.split(':').map(Number);
+    if (isNaN(h) || isNaN(mi)) return null;
+    const total = h * 60 + mi + n * (Number(autoTeeInterval) || 10);
+    return `${String(Math.floor(total / 60) % 24).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+  };
 
   const buildAutoFlights = async () => {
     let candidates = unassignedPlayers;
@@ -1702,6 +1729,7 @@ function FlightAdmin({ tournament, reload }) {
       const fid = newId();
       flightUpdates[fid] = {
         name: `${autoNamePrefix} ${Math.floor(i / autoFlightSize) + 1}`,
+        ...(teeAt(Math.floor(i / autoFlightSize)) ? { teeTime: teeAt(Math.floor(i / autoFlightSize)) } : {}),
         playerIds: group.map(p => p.id),
         rounds: autoRounds,
         token: genToken(),
@@ -1750,6 +1778,13 @@ function FlightAdmin({ tournament, reload }) {
                 <input type="number" min="2" max="6" value={autoFlightSize} onChange={e => setAutoFlightSize(Number(e.target.value) || 3)} style={{ ...inputStyle, width: 60 }} />
               </div>
               <input placeholder="Namens-Präfix" value={autoNamePrefix} onChange={e => setAutoNamePrefix(e.target.value)} style={{ ...inputStyle, width: 130 }} />
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ fontSize: 12, color: C.inkDim }}>Erste Tee-Time</span>
+                <input type="time" value={autoFirstTee} onChange={e => setAutoFirstTee(e.target.value)} style={{ ...inputStyle, width: 110 }} />
+                <span style={{ fontSize: 12, color: C.inkDim }}>Abstand</span>
+                <input type="number" min="5" max="20" value={autoTeeInterval} onChange={e => setAutoTeeInterval(e.target.value)} style={{ ...inputStyle, width: 60 }} />
+                <span style={{ fontSize: 12, color: C.inkDim }}>Min.</span>
+              </div>
             </div>
             {allRounds.length > 1 && (
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
@@ -1905,7 +1940,14 @@ function FlightAdmin({ tournament, reload }) {
                 {baseUrl}?m={f.token}
               </div>
               <div style={{ fontSize: 12, color: C.inkDim, marginTop: 4, marginBottom: 8 }}>Passwort: <b>{f.password}</b></div>
-              <FlightShareButtons flightName={f.name} link={`${baseUrl}?m=${f.token}`} password={f.password} tournamentName={meta.name} publicLink={`${baseUrl}?public=1`} />
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, fontSize: 12, color: C.inkDim, flexWrap: 'wrap' }}>
+                Tee-Time:
+                <input key={id + (f.teeTime || '')} type="time" defaultValue={f.teeTime || ''}
+                  onBlur={e => { if ((e.target.value || '') !== (f.teeTime || '')) setFlightTeeTime(id, e.target.value); }}
+                  style={{ ...inputStyle, width: 110 }} />
+                {!f.teeTime && <span style={{ color: C.muted }}>noch keine – erscheint in der Live-Ansicht bei "Loch", bis der Flight startet</span>}
+              </div>
+              <FlightShareButtons flightName={f.name} link={`${baseUrl}?m=${f.token}`} password={f.password} tournamentName={meta.name} publicLink={`${baseUrl}?public=1`} teeTime={f.teeTime} />
             </div>
           )
         ))}
@@ -2169,6 +2211,17 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
   const scoreTextFor = (v) => v === null ? 'PAR' : v === 0 ? 'PAR' : v > 0 ? '+' + v : String(v);
   // Loch-Spalte: vor dem Start ein Strich, nach dem letzten Loch "F" (final).
   const thruTextFor = (thru) => thru === 0 ? '–' : thru >= m.holes ? 'F' : String(thru);
+  // Tee-Time des Flights, in dem der Spieler für die angezeigte Runde steht (falls hinterlegt). Wird
+  // anstelle von "–" in der Spalte "Loch" gezeigt, solange der Spieler noch kein Loch eingetragen hat.
+  const teeTimeFor = (playerId) => {
+    for (const fid of Object.keys(flights)) {
+      const f = flights[fid];
+      if (!(f.playerIds || []).includes(playerId)) continue;
+      if (f.rounds && f.rounds.length && !f.rounds.includes(effectiveRound)) continue;
+      if (f.teeTime) return f.teeTime;
+    }
+    return null;
+  };
 
   // Ermittelt den Brutto-Sieger für eine bestimmte Brutto-Klasse (ggf. nach Geschlecht gefiltert),
   // für die Ausschluss-Regel: wer Brutto gewinnt, kann in der zugehörigen Netto-Klasse nicht auch Sieger sein.
@@ -2224,10 +2277,12 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
       dqAwareSort(visibleRows, (a, b) => (a.grossToPar ?? 999) - (b.grossToPar ?? 999));
     }
   } else if (activeBruttoClass) {
-    visibleRows = rows.filter(r => ((isStableford && !isMasters) ? r.grossPts !== null : r.gross !== null) && (!activeBruttoClass.gender || r.geschlecht === activeBruttoClass.gender));
+    visibleRows = rows.filter(r => ((isStableford && !isMasters) ? r.grossPts !== null : (isMasters || r.gross !== null)) && (!activeBruttoClass.gender || r.geschlecht === activeBruttoClass.gender));
     dqAwareSort(visibleRows, (a, b) => {
       if (isMasters) {
-        if (!!a.strichGross !== !!b.strichGross) return a.strichGross ? 1 : -1; // Strich: ans Ende der Brutto-Liste
+        // Reihenfolge: gültige Schlagzahl, dann Strich (keine Wertung), dann noch nicht gestartet
+        const rk = (r) => r.gross === null ? 2 : (r.strichGross ? 1 : 0);
+        if (rk(a) !== rk(b)) return rk(a) - rk(b);
         return (a.grossToPar ?? 999) - (b.grossToPar ?? 999);
       }
       return isStableford ? (b.grossPts ?? -1) - (a.grossPts ?? -1) : (a.grossToPar ?? 999) - (b.grossToPar ?? 999);
@@ -2269,7 +2324,7 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
   ];
   const prizeTierForRow = (i, row) => {
     if (row && (row.disqualified || row.withdrawn)) return null; // DQ/WD bekommen nie eine Sieger-Hervorhebung
-    if (row && isMasters && showGross && row.strichGross) return null; // Masters-Brutto: Strich = keine Wertung
+    if (row && isMasters && showGross && (row.strichGross || row.gross === null)) return null; // Masters-Brutto: Strich / noch nicht gestartet = keine Wertung
     if (excludedNote && i === 0) return null; // ausgeschlossener Spieler bekommt keinen Preisrang-Look
     const rank = excludedNote ? i - 1 : i;
     return rank < prizeCount ? PRIZE_TIERS[rank] : null;
@@ -2339,7 +2394,7 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
 
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 18, padding: '8px 20px 4px', borderBottom: `1px solid ${C.line}` }}>
             <div style={{ textAlign: 'center', minWidth: 54, fontSize: 11, color: C.muted, fontWeight: 600 }}>Total</div>
-            <div style={{ textAlign: 'center', minWidth: 30, fontSize: 11, color: C.muted, fontWeight: 600 }}>Loch</div>
+            <div style={{ textAlign: 'center', minWidth: 44, fontSize: 11, color: C.muted, fontWeight: 600 }}>Loch</div>
           </div>
         </div>
 
@@ -2350,7 +2405,7 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
             <div key={r.id} onClick={() => setDetailPlayer(r.id)}
               style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 20px', background: tier ? tier.bg : 'transparent', borderBottom: `1px solid ${C.line}`, cursor: 'pointer' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-                <span style={{ fontSize: 13, color: (r.disqualified || r.withdrawn) ? C.red : C.muted, width: 24, fontWeight: 700 }}>{r.disqualified ? 'DQ' : r.withdrawn ? 'WD' : (isMasters && showGross && r.strichGross) ? '–' : i + 1}</span>
+                <span style={{ fontSize: 13, color: (r.disqualified || r.withdrawn) ? C.red : C.muted, width: 24, fontWeight: 700 }}>{r.disqualified ? 'DQ' : r.withdrawn ? 'WD' : (isMasters && showGross && (r.strichGross || r.gross === null)) ? '–' : i + 1}</span>
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: 7 }}>
                   <span style={{ fontSize: tier ? tier.size : 15, fontWeight: tier ? tier.weight : 500, color: tier ? tier.color : C.ink }}>{lastNameFirst(r.name)}{isStableford && activeHcpClass && r.id === bruttoLeaderIdFor(r.geschlecht) ? ' 🏆' : ''}</span>
                 </div>
@@ -2387,8 +2442,10 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
                     </div>
                   )}
                 </div>
-                <div style={{ textAlign: 'center', minWidth: 30 }}>
-                  <div style={{ fontSize: 15, color: C.muted }}>{thruTextFor(r.thru)}</div>
+                <div style={{ textAlign: 'center', minWidth: 44 }}>
+                  {r.thru === 0 && teeTimeFor(r.id)
+                    ? <div style={{ fontSize: 13, color: C.ink, fontWeight: 600 }}>{teeTimeFor(r.id)}</div>
+                    : <div style={{ fontSize: 15, color: C.muted }}>{thruTextFor(r.thru)}</div>}
                 </div>
               </div>
             </div>
