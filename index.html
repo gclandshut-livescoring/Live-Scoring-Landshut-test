@@ -108,6 +108,11 @@ const NETTO_CM_ID = 'NettoCM';
 const NETTO_CM_LABEL = 'Netto-Clubmeisterschaft';
 // Für Dropdowns bei der Spieleranlage: alle festen Klassen plus Netto-Clubmeisterschaft als Option.
 const PLAYER_CLASS_OPTIONS = [...FIXED_CLASSES, NETTO_CM_ID];
+// Jugend hat zusätzlich zur Brutto-Stableford-Wertung eine eigene interne Netto-Wertung (Vorgabe
+// verrechnet) unter denselben Jugend-Teilnehmern – kein eigenes Anmeldefeld, sondern nur ein
+// zusätzlicher Tab neben "Jugend" mit derselben Teilnehmerliste, anders sortiert/angezeigt.
+const JUGEND_NETTO_ID = 'JugendNetto';
+const JUGEND_NETTO_LABEL = 'Jugend Netto';
 const HCP_LETTERS = ['A', 'B', 'C', 'D'];
 // Alle vier Tees teilen sich dieselbe Par-/Index-Karte, nur CR und Slope unterscheiden sich –
 // daraus errechnet sich pro Tee die tatsächliche Spielvorgabe (Course Handicap) aus dem
@@ -145,9 +150,16 @@ const TOURNAMENT_YEAR = new Date().getFullYear();
 // "Herren" spielt von Weiß. Netto-Clubmeisterschaft (wie auch AK30/50/65, Jugend) spielt bei Männern
 // immer Gelb, bei Frauen immer Rot – unabhängig davon, was früher mal gespeichert wurde. Betrifft
 // nur die Anzeige/Vorgabenberechnung (Par/Index sind für alle Tees identisch, nur CR/Slope unterscheiden sich).
-function effectiveTeeFor(p) {
+// Masters: Wertung und Abschlag hängen am Handicap-Index. Bis 18,4: Herren Weiß / Damen Blau,
+// ab 18,5: Herren Gelb / Damen Rot (Ausschreibung Masters 2026).
+const MASTERS_STABLEFORD_FROM = 18.5;
+function effectiveTeeFor(p, meta) {
   const base = p.classes && p.classes[0];
   const isWoman = p.geschlecht === 'w';
+  if (meta && meta.type === 'masters') {
+    const low = Number(p.hcp) < MASTERS_STABLEFORD_FROM;
+    return low ? (isWoman ? 'Blau' : 'Weiß') : (isWoman ? 'Rot' : 'Gelb');
+  }
   if (base === NETTO_CM_ID || p.nettoCM) return isWoman ? 'Rot' : 'Gelb';
   if (base === 'Herren') return 'Weiß';
   return isWoman ? 'Rot' : 'Gelb';
@@ -202,6 +214,7 @@ function expandFixedClassIds(fixedClasses) {
   const out = [];
   (fixedClasses || []).forEach(c => {
     if (AK_CLASSES.includes(c)) out.push(`${c} Herren`, `${c} Damen`);
+    else if (c === 'Jugend') out.push('Jugend', JUGEND_NETTO_ID);
     else out.push(c);
   });
   return out;
@@ -521,7 +534,7 @@ function TournamentSetup({ tournament, reload }) {
   const [classificationMode, setClassificationMode] = useState(m.classificationMode || (type === 'clubmeisterschaft' ? 'fixed' : 'hcp'));
   const [hcpClasses, setHcpClasses] = useState(m.hcpClasses || [{ id: 'A', from: 0, to: 8, prizeCount: 3 }, { id: 'B', from: 8.1, to: 16, prizeCount: 3 }]);
   const [rounds, setRounds] = useState(m.rounds || [{ id: 1, label: 'Runde 1' }, { id: 2, label: 'Runde 2' }]);
-  const [scoringMode, setScoringMode] = useState(m.scoringMode || ((m.type || 'clubmeisterschaft') === 'clubmeisterschaft' || (m.type || '') === 'masters' ? 'strokeplay_net' : 'stableford'));
+  const [scoringMode, setScoringMode] = useState(m.scoringMode || ((m.type || 'clubmeisterschaft') === 'clubmeisterschaft' ? 'strokeplay_net' : 'stableford'));
   const [adminPin, setAdminPin] = useState(m.adminPin || '2026');
   const [scoringLocked, setScoringLocked] = useState(!!m.scoringLocked);
   const [herrenTee, setHerrenTee] = useState(m.herrenTee || 'Weiß');
@@ -568,10 +581,24 @@ function TournamentSetup({ tournament, reload }) {
   }, [type]);
 
   // Sinnvoller Standard je Turnierart, admin kann trotzdem jederzeit umstellen
-  const suggestScoringMode = (t) => (t === 'clubmeisterschaft' || t === 'masters') ? 'strokeplay_net' : 'stableford';
+  const suggestScoringMode = (t) => t === 'clubmeisterschaft' ? 'strokeplay_net' : 'stableford';
   const scoringModeTouched = useRef(!!m.scoringMode);
   useEffect(() => {
     if (!scoringModeTouched.current) setScoringMode(suggestScoringMode(type));
+  }, [type]);
+
+  // Masters: beim Umstellen auf "Masters" die Wertungsklassen der Ausschreibung vorbelegen
+  // (Brutto kombiniert Damen+Herren mit 1 Preis, Netto A bis 18,4 und Netto B ab 18,5 mit je 2 Preisen).
+  // Nur beim aktiven Wechsel, nicht beim bloßen Öffnen – bereits gespeicherte Werte bleiben unangetastet.
+  const prevTypeRef = useRef(type);
+  useEffect(() => {
+    if (prevTypeRef.current !== type && type === 'masters') {
+      setHcpClasses([{ id: 'A', from: '', to: 18.4, prizeCount: 2 }, { id: 'B', from: 18.5, to: '', prizeCount: 2 }]);
+      setBruttoSplit(false);
+      setBruttoPrizeCombined(1);
+      setScoringMode('stableford');
+    }
+    prevTypeRef.current = type;
   }, [type]);
 
   const setHcpCount = (n) => {
@@ -900,7 +927,8 @@ function PlayerAdmin({ tournament, reload }) {
   // nach der Klassen-Konfiguration. Bei Klubturnieren zählt die allgemeine Herren/Damen-Einstellung.
   // Netto-Clubmeisterschaft-Teilnehmer bekommen IMMER Gelb (Herren) / Rot (Damen), unabhängig von
   // der sonst registrierten Klasse – nie Weiß oder Blau.
-  const teeForGeschlecht = (g, selectedClass, isNettoCM) => {
+  const teeForGeschlecht = (g, selectedClass, isNettoCM, hcpVal) => {
+    if (meta.type === 'masters') return effectiveTeeFor({ geschlecht: g, hcp: hcpVal }, meta);
     if (isNettoCM || selectedClass === NETTO_CM_ID) return g === 'w' ? 'Rot' : 'Gelb';
     if (meta.classificationMode === 'fixed' && selectedClass) {
       return effectiveTeeFor({ classes: [selectedClass], geschlecht: g });
@@ -917,7 +945,7 @@ function PlayerAdmin({ tournament, reload }) {
       const existing = await lookupMember(name);
       if (existing && existing.geburtsjahr) geb = existing.geburtsjahr;
     }
-    await fbPatch('tournament/players/' + id, { name, hcp: Number(hcp), classes: cls ? [cls] : [], geschlecht, geburtsjahr: geb || null, nettoCM: cls === NETTO_CM_ID, tee: teeForGeschlecht(geschlecht, cls, cls === NETTO_CM_ID) });
+    await fbPatch('tournament/players/' + id, { name, hcp: Number(hcp), classes: cls ? [cls] : [], geschlecht, geburtsjahr: geb || null, nettoCM: cls === NETTO_CM_ID, tee: teeForGeschlecht(geschlecht, cls, cls === NETTO_CM_ID, hcp) });
     if (geb) await upsertMember(name, geb, geschlecht);
     setName(''); setHcp(''); setGeburtsjahr('');
     await reload();
@@ -970,7 +998,7 @@ function PlayerAdmin({ tournament, reload }) {
       geschlecht: editDraft.geschlecht,
       geburtsjahr: editDraft.geburtsjahr || null,
       nettoCM: isNettoCM,
-      tee: teeForGeschlecht(editDraft.geschlecht, editDraft.cls, isNettoCM),
+      tee: teeForGeschlecht(editDraft.geschlecht, editDraft.cls, isNettoCM, editDraft.hcp),
     });
     if (editDraft.geburtsjahr) await upsertMember(editDraft.name, editDraft.geburtsjahr, editDraft.geschlecht);
     setEditingId(null); setEditDraft(null);
@@ -1001,7 +1029,7 @@ function PlayerAdmin({ tournament, reload }) {
     const updates = {};
     Object.entries(players).forEach(([id, p]) => {
       const cls = p.classes && p.classes[0];
-      const correctTee = effectiveTeeFor(p);
+      const correctTee = effectiveTeeFor(p, meta);
       if (p.tee !== correctTee) updates[id] = { tee: correctTee };
     });
     if (Object.keys(updates).length === 0) return;
@@ -1054,7 +1082,7 @@ function PlayerAdmin({ tournament, reload }) {
         }
         const id = newId();
         const finalCls = pNettoCM ? NETTO_CM_ID : pcls;
-        playerUpdates[id] = { name: pname, hcp: Number(phcp), classes: finalCls ? [finalCls] : [], geschlecht: pg, geburtsjahr: pgeb, nettoCM: pNettoCM, tee: teeForGeschlecht(pg, finalCls, pNettoCM) };
+        playerUpdates[id] = { name: pname, hcp: Number(phcp), classes: finalCls ? [finalCls] : [], geschlecht: pg, geburtsjahr: pgeb, nettoCM: pNettoCM, tee: teeForGeschlecht(pg, finalCls, pNettoCM, phcp) };
         if (pgeb) memberUpserts[memberKey(pname)] = { name: pname, geburtsjahr: pgeb, geschlecht: pg };
         if (pflight) {
           if (!flightGroups[pflight]) flightGroups[pflight] = [];
@@ -1159,7 +1187,7 @@ function PlayerAdmin({ tournament, reload }) {
                 {p.disqualified && <span style={{ fontSize: 11, fontWeight: 700, color: C.red, marginLeft: 8, border: `1px solid ${C.red}`, borderRadius: 4, padding: '1px 6px' }}>DQ</span>}
                 {p.withdrawn && <span style={{ fontSize: 11, fontWeight: 700, color: C.red, marginLeft: 8, border: `1px solid ${C.red}`, borderRadius: 4, padding: '1px 6px' }}>WD</span>}
                 <span style={{ fontSize: 12, color: C.muted, marginLeft: 8 }}>
-                  Hcp {p.hcp} · {p.geschlecht === 'w' ? 'Dame' : 'Herr'}{p.geburtsjahr ? ` · *${p.geburtsjahr}` : ''} · Tee {effectiveTeeFor(p)}
+                  Hcp {p.hcp} · {p.geschlecht === 'w' ? 'Dame' : 'Herr'}{p.geburtsjahr ? ` · *${p.geburtsjahr}` : ''} · Tee {effectiveTeeFor(p, meta)}
                   {meta.classificationMode === 'fixed' ? ` · ${effectiveClassesFor(p).join(', ') || '–'}` : (p.classes && p.classes.length ? '· ' + p.classes.join(', ') : '')}
                   {p.nettoCM ? ' · Netto-CM' : ''}
                 </span>
@@ -1853,7 +1881,10 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
 
   // Summiert Schläge UND das Par der tatsächlich gespielten Löcher über alle Runden,
   // damit wir "brutto/netto relativ zum Par" korrekt anzeigen können (wie bei Turnier-Leaderboards üblich).
-  const isStableford = m.scoringMode === 'stableford';
+  // Masters: Brutto zählt nach Schlägen (Zählspiel) für ALLE Spieler, die Netto-Klassen A/B nach
+  // Netto-Stableford – unabhängig von der Einstellung "Scoring-Modus" im Admin.
+  const isMasters = m.type === 'masters';
+  const isStableford = m.scoringMode === 'stableford' || isMasters;
 
   const totalsAcrossRounds = (playerId, roundList) => {
     let gross = 0, par = 0, any = false;
@@ -1914,20 +1945,44 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
     // Wertungsklasse) – nur Spieler mit explizitem Opt-in (p.nettoCM) zählen mit, nicht automatisch
     // jeder, der irgendwo einen Score einträgt.
     const isNettoCMPlayer = (p.classes && p.classes[0] === NETTO_CM_ID) || p.nettoCM;
-    const cmNettoRaw = (showNettoCM && isNettoCMPlayer) ? stablefordTotalsAcrossRounds(id, p.hcp, effectiveTeeFor(p), classRounds).netPts : null;
+    const cmNettoRaw = (showNettoCM && isNettoCMPlayer) ? stablefordTotalsAcrossRounds(id, p.hcp, effectiveTeeFor(p, m), classRounds).netPts : null;
     const cmNettoBaselineRow = classRounds.length * m.holes * 2;
     const cmNettoDiff = cmNettoRaw === null ? null : cmNettoRaw - cmNettoBaselineRow;
     // Immer BEIDE Metriken berechnen (Zählspiel Brutto UND Stableford-Punkte), damit jede Klasse
     // ihre eigene Wertungslogik nutzen kann – z. B. spielt Jugend laut PC Caddy Stableford,
     // Herren/Damen/AK dagegen Zählspiel – unabhängig vom allgemeinen Turnier-Scoring-Modus.
-    const stbl = stablefordTotalsAcrossRounds(id, p.hcp, effectiveTeeFor(p), classRounds);
+    const stbl = stablefordTotalsAcrossRounds(id, p.hcp, effectiveTeeFor(p, m), classRounds);
     if (isStableford) {
       const { grossPts, netPts, gbe } = stbl;
-      return { id, ...p, effClasses, grossPts, netPts, gbe, cmNettoRaw, cmNettoDiff, thru: holesPlayed(thruScores) };
+      // Schlagzahl-Brutto zusätzlich mitrechnen (für Masters). Wer ein Loch aufgegeben hat (Strich),
+      // hat keine vollständige Schlagzahl und kommt in der Brutto-Wertung nicht in die Rangfolge.
+      const { gross, par } = totalsAcrossRounds(id, classRounds);
+      const grossToPar = gross === null ? null : gross - par;
+      const strichGross = grossPts !== null && gbe === null;
+      // Masters, Hcp bis 18,4 (Zählspiel nach Regel 3.1): Netto = Schläge minus Vorgabeschläge auf den
+      // bereits gespielten Löchern, gegen Par dieser Löcher. So bleibt die Rangliste auch mitten in der
+      // Runde fair (kein Vorteil für Spieler, die erst wenige Löcher gespielt haben).
+      let netToParHoles = null;
+      if (isMasters) {
+        const courseHcpM = courseHandicapFor(p.hcp, effectiveTeeFor(p, m), m.holes);
+        const cf = courseFor(m.holes);
+        let diffN = 0, anyN = false;
+        classRounds.forEach(r => {
+          const sN = findPlayerRoundScores(id, r.id);
+          Object.entries(sN).forEach(([hiStr, val]) => {
+            if (!isNumericScore(val)) return;
+            const hi = Number(hiStr);
+            diffN += Number(val) - strokesOnHole(courseHcpM, cf.si[hi], m.holes) - (cf.pars[hi] || 0);
+            anyN = true;
+          });
+        });
+        netToParHoles = anyN ? diffN : null;
+      }
+      return { id, ...p, effClasses, gross, grossToPar, strichGross, netToParHoles, grossPts, netPts, gbe, cmNettoRaw, cmNettoDiff, thru: holesPlayed(thruScores) };
     }
     const { gross, par } = totalsAcrossRounds(id, classRounds);
     const grossToPar = gross === null ? null : gross - par;
-    const net = gross === null ? null : Math.round(gross - courseHandicapFor(p.hcp, effectiveTeeFor(p), m.holes));
+    const net = gross === null ? null : Math.round(gross - courseHandicapFor(p.hcp, effectiveTeeFor(p, m), m.holes));
     const netToPar = net === null ? null : net - par;
     return { id, ...p, effClasses, gross, grossToPar, net, netToPar, grossPts: stbl.grossPts, netPts: stbl.netPts, cmNettoRaw, cmNettoDiff, thru: holesPlayed(thruScores) };
   });
@@ -1945,6 +2000,12 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
   const bruttoLeaderIdFor = (geschlecht) => {
     if (!isStableford) return null;
     const relevantClass = bruttoClasses.find(c => !c.gender || c.gender === geschlecht) || bruttoClasses[0];
+    if (isMasters) {
+      const cand = rows
+        .filter(r => r.gross !== null && !r.strichGross && !r.disqualified && !r.withdrawn && (!relevantClass.gender || r.geschlecht === relevantClass.gender))
+        .sort((a, b) => a.grossToPar - b.grossToPar);
+      return cand.length ? cand[0].id : null;
+    }
     const candidates = rows
       .filter(r => r.grossPts !== null && (!relevantClass.gender || r.geschlecht === relevantClass.gender))
       .sort((a, b) => b.grossPts - a.grossPts);
@@ -1971,6 +2032,12 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
     // gespielt hat (der eigentliche Bug: vorher wurden Spieler ohne Score komplett ausgeblendet).
     visibleRows = rows.filter(r => (r.classes && r.classes[0] === NETTO_CM_ID) || r.nettoCM);
     dqAwareSort(visibleRows, (a, b) => (b.cmNettoRaw ?? -1) - (a.cmNettoRaw ?? -1));
+  } else if (activeClass === JUGEND_NETTO_ID) {
+    // Jugend-Netto: dieselben Teilnehmer wie im Jugend-Tab (effClasses enthält "Jugend"), aber nach
+    // Netto-Stableford-Punkten (Vorgabe verrechnet) sortiert statt nach Brutto – eigene interne
+    // Netto-Wertung unter den Jugend-Spielern, kein separates Anmeldefeld nötig.
+    visibleRows = rows.filter(r => (r.effClasses || []).includes('Jugend'));
+    dqAwareSort(visibleRows, (a, b) => (b.netPts ?? -1) - (a.netPts ?? -1));
   } else if (m.classificationMode === 'fixed') {
     // Feste Klassen entscheiden nach Brutto (Zählspiel) – AUSSER Jugend, die laut PC Caddy nach
     // Stableford-Bruttopunkten gewertet wird. Ein Spieler kann dank Alters-Mehrfachwertung in
@@ -1982,11 +2049,24 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
       dqAwareSort(visibleRows, (a, b) => (a.grossToPar ?? 999) - (b.grossToPar ?? 999));
     }
   } else if (activeBruttoClass) {
-    visibleRows = rows.filter(r => (isStableford ? r.grossPts !== null : r.gross !== null) && (!activeBruttoClass.gender || r.geschlecht === activeBruttoClass.gender));
-    dqAwareSort(visibleRows, (a, b) => isStableford ? (b.grossPts ?? -1) - (a.grossPts ?? -1) : (a.grossToPar ?? 999) - (b.grossToPar ?? 999));
+    visibleRows = rows.filter(r => ((isStableford && !isMasters) ? r.grossPts !== null : r.gross !== null) && (!activeBruttoClass.gender || r.geschlecht === activeBruttoClass.gender));
+    dqAwareSort(visibleRows, (a, b) => {
+      if (isMasters) {
+        if (!!a.strichGross !== !!b.strichGross) return a.strichGross ? 1 : -1; // Strich: ans Ende der Brutto-Liste
+        return (a.grossToPar ?? 999) - (b.grossToPar ?? 999);
+      }
+      return isStableford ? (b.grossPts ?? -1) - (a.grossPts ?? -1) : (a.grossToPar ?? 999) - (b.grossToPar ?? 999);
+    });
   } else {
     visibleRows = rows.filter(r => playerHcpClass(r.hcp, hcpClassesWithPrize) === activeClass);
-    dqAwareSort(visibleRows, (a, b) => isStableford ? (b.netPts ?? -1) - (a.netPts ?? -1) : (a.netToPar ?? 999) - (b.netToPar ?? 999));
+    dqAwareSort(visibleRows, (a, b) => {
+      if (isMasters) {
+        const sa = Number(a.hcp) < MASTERS_STABLEFORD_FROM, sb = Number(b.hcp) < MASTERS_STABLEFORD_FROM;
+        if (sa && sb) return (a.netToParHoles ?? 999) - (b.netToParHoles ?? 999); // Netto A: Zählspiel-Netto, wenigste Netto-Schläge vorn
+        if (sa !== sb) return sa ? -1 : 1;
+      }
+      return isStableford ? (b.netPts ?? -1) - (a.netPts ?? -1) : (a.netToPar ?? 999) - (b.netToPar ?? 999);
+    });
   }
 
   // Zeigt Brutto an, wenn entweder eine feste Klasse (Clubmeisterschaft) oder der Brutto-Tab aktiv ist.
@@ -2014,6 +2094,7 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
   ];
   const prizeTierForRow = (i, row) => {
     if (row && (row.disqualified || row.withdrawn)) return null; // DQ/WD bekommen nie eine Sieger-Hervorhebung
+    if (row && isMasters && showGross && row.strichGross) return null; // Masters-Brutto: Strich = keine Wertung
     if (excludedNote && i === 0) return null; // ausgeschlossener Spieler bekommt keinen Preisrang-Look
     const rank = excludedNote ? i - 1 : i;
     return rank < prizeCount ? PRIZE_TIERS[rank] : null;
@@ -2065,7 +2146,7 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
           <div style={{ display: 'flex', gap: 6, padding: '12px 16px', borderBottom: `1px solid ${C.line}`, overflowX: 'auto' }}>
             {classIds.map(c => {
               const bc = bruttoClasses.find(x => x.id === c);
-              const label = c === NETTO_CM_ID ? NETTO_CM_LABEL : (bc ? bc.label : (m.classificationMode === 'fixed' ? c : `Netto ${c}`));
+              const label = c === NETTO_CM_ID ? NETTO_CM_LABEL : c === JUGEND_NETTO_ID ? JUGEND_NETTO_LABEL : (bc ? bc.label : (m.classificationMode === 'fixed' ? c : `Netto ${c}`));
               return (
               <button key={c} onClick={() => setActiveClass(c)}
                 style={{ flexShrink: 0, fontSize: 12, padding: '5px 12px', borderRadius: 6, border: `1px solid ${activeClass === c ? C.ink : C.line}`, background: activeClass === c ? C.ink : '#fff', color: activeClass === c ? '#fff' : C.ink, cursor: 'pointer' }}>
@@ -2094,7 +2175,7 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
             <div key={r.id} onClick={() => setDetailPlayer(r.id)}
               style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 20px', background: tier ? tier.bg : 'transparent', borderBottom: `1px solid ${C.line}`, cursor: 'pointer' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-                <span style={{ fontSize: 13, color: (r.disqualified || r.withdrawn) ? C.red : C.muted, width: 24, fontWeight: 700 }}>{r.disqualified ? 'DQ' : r.withdrawn ? 'WD' : i + 1}</span>
+                <span style={{ fontSize: 13, color: (r.disqualified || r.withdrawn) ? C.red : C.muted, width: 24, fontWeight: 700 }}>{r.disqualified ? 'DQ' : r.withdrawn ? 'WD' : (isMasters && showGross && r.strichGross) ? '–' : i + 1}</span>
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: 7 }}>
                   <span style={{ fontSize: tier ? tier.size : 15, fontWeight: tier ? tier.weight : 500, color: tier ? tier.color : C.ink }}>{lastNameFirst(r.name)}{isStableford && activeHcpClass && r.id === bruttoLeaderIdFor(r.geschlecht) ? ' 🏆' : ''}</span>
                 </div>
@@ -2108,6 +2189,18 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
                   ) : activeClass === 'Jugend' ? (
                     <div style={{ fontSize: tier ? tier.size : 16, fontWeight: tier ? tier.weight : 600, color: tier ? tier.color : C.ink }}>
                       {r.grossPts ?? 0} Pkt.
+                    </div>
+                  ) : activeClass === JUGEND_NETTO_ID ? (
+                    <div style={{ fontSize: tier ? tier.size : 16, fontWeight: tier ? tier.weight : 600, color: tier ? tier.color : C.ink }}>
+                      {r.netPts ?? 0} Pkt.
+                    </div>
+                  ) : isMasters && showGross ? (
+                    <div style={{ fontSize: tier ? tier.size : 16, fontWeight: tier ? tier.weight : 600, color: r.strichGross ? C.muted : scoreColorFor(r.grossToPar) }}>
+                      {r.strichGross ? 'Strich' : scoreTextFor(r.grossToPar)}
+                    </div>
+                  ) : isMasters && Number(r.hcp) < MASTERS_STABLEFORD_FROM ? (
+                    <div style={{ fontSize: tier ? tier.size : 16, fontWeight: tier ? tier.weight : 600, color: scoreColorFor(r.netToParHoles) }}>
+                      {scoreTextFor(r.netToParHoles)}
                     </div>
                   ) : isStableford ? (
                     <div style={{ fontSize: tier ? tier.size : 16, fontWeight: tier ? tier.weight : 600, color: tier ? tier.color : C.ink }}>
@@ -2135,6 +2228,7 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
           tournament={tournament}
           playerId={detailPlayer}
           initialRound={effectiveRound}
+          viewMode={activeBruttoClass ? 'brutto' : activeHcpClass ? 'netto' : undefined}
           findPlayerRoundScores={findPlayerRoundScores}
           onClose={() => setDetailPlayer(null)}
         />
@@ -2149,7 +2243,7 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
   );
 }
 
-function ScoreDetailModal({ tournament, playerId, initialRound, findPlayerRoundScores, onClose }) {
+function ScoreDetailModal({ tournament, playerId, initialRound, viewMode, findPlayerRoundScores, onClose }) {
   const m = tournament.meta;
   const p = tournament.players[playerId];
   const playerClass = (p.classes && p.classes[0]) || null;
@@ -2160,7 +2254,7 @@ function ScoreDetailModal({ tournament, playerId, initialRound, findPlayerRoundS
   const { pars, si } = courseFor(holes);
   // Tee-richtige Spielvorgabe (Course Handicap) einmal berechnen, aus dem rohen Handicap-Index
   // + Tee des Spielers – offizielle WHS-Formel, siehe courseHandicapFor.
-  const courseHcp = courseHandicapFor(p.hcp, effectiveTeeFor(p), holes);
+  const courseHcp = courseHandicapFor(p.hcp, effectiveTeeFor(p, m), holes);
 
   // Gesamtstand über alle Runden der Klasse, damit er oben neben dem Namen angezeigt werden kann.
   // Netto-Klubmeisterschaft- UND Jugend-Spieler rechnen IMMER nach Stableford-Punkten (rohe,
@@ -2168,33 +2262,42 @@ function ScoreDetailModal({ tournament, playerId, initialRound, findPlayerRoundS
   // Clubmeisterschaft für Herren/Damen/AK ja Zählspiel ist) – gleicher Fix wie in der Live-Rangliste.
   const isNettoCMPlayer = (p.classes && p.classes[0] === NETTO_CM_ID) || p.nettoCM;
   const isJugendPlayer = playerClass === 'Jugend';
+  // Masters: im Brutto-Tab zählen Schläge gegen Par, in den Netto-Klassen A/B Netto-Stableford-Punkte.
+  const isMastersM = m.type === 'masters';
+  const mastersNetto = isMastersM && viewMode === 'netto';
+  const mastersBrutto = isMastersM && viewMode === 'brutto';
+  const mastersStrokeNetto = mastersNetto && Number(p.hcp) < MASTERS_STABLEFORD_FROM; // Netto A: Zählspiel-Netto
+  const mastersPtsNetto = mastersNetto && !mastersStrokeNetto;                       // Netto B: Netto-Stableford
   const totalDisplay = (() => {
-    const isStbl = isNettoCMPlayer || isJugendPlayer || m.scoringMode === 'stableford';
-    let gross = 0, parSum = 0, grossPts = 0, netPts = 0, any = false;
+    const isStbl = isNettoCMPlayer || isJugendPlayer || mastersPtsNetto || (m.scoringMode === 'stableford' && !isMastersM);
+    let gross = 0, parSum = 0, grossPts = 0, netPts = 0, netDiff = 0, any = false, strichSeen = false;
     modalRounds.forEach(r => {
       const s = findPlayerRoundScores(playerId, r.id);
       Object.entries(s).forEach(([hiStr, val]) => {
         if (!isEntered(val)) return;
         any = true;
         const hi = Number(hiStr);
-        if (val === STRICH) return;
+        if (val === STRICH) { strichSeen = true; return; }
         const score = Number(val);
         gross += score;
         parSum += pars[hi] || 0;
         grossPts += stablefordPoints(score - (pars[hi] || 0));
         const net = score - strokesOnHole(courseHcp, si[hi], holes);
         netPts += stablefordPoints(net - (pars[hi] || 0));
+        netDiff += net - (pars[hi] || 0);
       });
     });
     if (!any) return null;
     if (isStbl) {
       // Netto-Clubmeisterschaft zählt Netto-Punkte (Vorgabe wird abgezogen), Jugend dagegen
       // Brutto-Punkte (rohe Schläge gegen Par, keine Vorgabe-Verrechnung).
-      const pts = isNettoCMPlayer ? netPts : grossPts;
+      const pts = (isNettoCMPlayer || mastersPtsNetto) ? netPts : grossPts;
       return { text: `${pts} Pkt.`, color: C.ink };
     }
     // Bei Zählspiel (Herren/Damen/AK) zählt IMMER Brutto, exakt wie in der Live-Rangliste –
     // nicht Netto. Vorher stand hier fälschlich das Netto-Ergebnis (Brutto minus Vorgabe).
+    if (mastersStrokeNetto) return { text: netDiff === 0 ? 'PAR' : netDiff > 0 ? '+' + netDiff : String(netDiff), color: netDiff === 0 ? C.muted : netDiff < 0 ? C.red : C.ink };
+    if (mastersBrutto && strichSeen) return { text: 'Strich', color: C.muted };
     const toPar = gross - parSum;
     return {
       text: toPar === 0 ? 'PAR' : toPar > 0 ? '+' + toPar : String(toPar),
@@ -2212,7 +2315,7 @@ function ScoreDetailModal({ tournament, playerId, initialRound, findPlayerRoundS
 
   // Netto-Klubmeisterschaft-Spieler bekommen die kleine Netto-Punkte-Zahl pro Loch immer angezeigt,
   // unabhängig vom allgemeinen Turnier-Scoring-Modus (der bei Clubmeisterschaft ja Zählspiel ist).
-  const isStableford = isNettoCMPlayer || isJugendPlayer || m.scoringMode === 'stableford';
+  const isStableford = isNettoCMPlayer || isJugendPlayer || mastersPtsNetto || (m.scoringMode === 'stableford' && !isMastersM);
 
   const renderBlock = (startIdx, count) => {
     const cells = [];
@@ -2229,7 +2332,7 @@ function ScoreDetailModal({ tournament, playerId, initialRound, findPlayerRoundS
       // verrechnet). Jugend: Brutto-Punkte (keine Vorgabe-Verrechnung).
       let ptsBadge = null;
       if (isStableford && hasScore) {
-        if (isNettoCMPlayer) {
+        if (isNettoCMPlayer || mastersPtsNetto) {
           const strokes = strokesOnHole(courseHcp, si[i], holes);
           const netScore = Number(s) - strokes;
           ptsBadge = stablefordPoints(netScore - pars[i]);
@@ -2476,7 +2579,7 @@ function SoloEntry({ tournament, flightId, reload, isAdmin }) {
                 <div key={p.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', background: C.board, borderRadius: 8, opacity: 0.6 }}>
                   <div>
                     <div style={{ fontSize: 13, fontWeight: 500 }}>{p.name}</div>
-                    <div style={{ fontSize: 10, color: C.muted }}>Hcp {p.hcp} · Tee {effectiveTeeFor(p)}</div>
+                    <div style={{ fontSize: 10, color: C.muted }}>Hcp {p.hcp} · Tee {effectiveTeeFor(p, m)}</div>
                   </div>
                   <span style={{ fontSize: 11, color: C.muted }}>{adminLockedThisRound ? '🔒 Runde vom Admin gesperrt' : '🔒 vorherige Runde noch offen'}</span>
                 </div>
@@ -2485,12 +2588,12 @@ function SoloEntry({ tournament, flightId, reload, isAdmin }) {
             const isNettoCMPlayer = (p.classes && p.classes[0] === NETTO_CM_ID) || p.nettoCM;
             // Jugend spielt (wie Netto-Clubmeisterschaft) nach Stableford – Strich ("Loch aufgeben",
             // 0 Punkte) macht daher hier genauso Sinn, bei reinem Zählspiel (Herren/Damen/AK) nicht.
-            const isStablefordPlayer = isNettoCMPlayer || (p.classes && p.classes[0] === 'Jugend');
+            const isStablefordPlayer = isNettoCMPlayer || (p.classes && p.classes[0] === 'Jugend') || (m.type === 'masters' && Number(p.hcp) >= MASTERS_STABLEFORD_FROM);
             return (
               <div key={p.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', background: C.board, borderRadius: 8 }}>
                 <div>
                   <div style={{ fontSize: 13, fontWeight: 500 }}>{p.name}</div>
-                  <div style={{ fontSize: 10, color: C.muted }}>Hcp {p.hcp} · Tee {effectiveTeeFor(p)} · Vorg. {playerSi}</div>
+                  <div style={{ fontSize: 10, color: C.muted }}>Hcp {p.hcp} · Tee {effectiveTeeFor(p, m)} · Vorg. {playerSi}</div>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   {struck ? (
