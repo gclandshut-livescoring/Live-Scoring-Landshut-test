@@ -140,6 +140,8 @@ function courseHandicapFor(hcpi, tee, holes) {
   const raw = Number(hcpi) * (rating.slope / 113) + (rating.cr - par);
   return Math.round(raw);
 }
+// Vorgabe ohne Plus bei positiven Werten (14), nur bei Minus-Vorgaben mit Minus (-4).
+function signedVorgabe(n) { return String(n); }
 
 // Altersklassen-Grenzen (Mindestalter, überlappend): wer 65 ist, qualifiziert sich automatisch
 // auch für AK50 und AK30. Herren/Damen sind davon ausgenommen (kein Alterskriterium, eigenes Tee).
@@ -1365,7 +1367,7 @@ function PlayerAdmin({ tournament, reload }) {
                 {p.disqualified && <span style={{ fontSize: 11, fontWeight: 700, color: C.red, marginLeft: 8, border: `1px solid ${C.red}`, borderRadius: 4, padding: '1px 6px' }}>DQ</span>}
                 {p.withdrawn && <span style={{ fontSize: 11, fontWeight: 700, color: C.red, marginLeft: 8, border: `1px solid ${C.red}`, borderRadius: 4, padding: '1px 6px' }}>WD</span>}
                 <span style={{ fontSize: 12, color: C.muted, marginLeft: 8 }}>
-                  Hcp {p.hcp} · {p.geschlecht === 'w' ? 'Dame' : 'Herr'}{p.geburtsjahr ? ` · *${p.geburtsjahr}` : ''} · Tee {effectiveTeeFor(p, meta)}
+                  Hcp {p.hcp} · {p.geschlecht === 'w' ? 'Dame' : 'Herr'}{p.geburtsjahr ? ` · *${p.geburtsjahr}` : ''} · Tee {effectiveTeeFor(p, meta)} · Vorg. {signedVorgabe(courseHandicapFor(p.hcp, effectiveTeeFor(p, meta), meta.holes))}
                   {meta.classificationMode === 'fixed' ? ` · ${effectiveClassesFor(p).join(', ') || '–'}` : (p.classes && p.classes.length ? '· ' + p.classes.join(', ') : '')}
                   {p.nettoCM ? ' · Netto-CM' : ''}
                 </span>
@@ -2322,7 +2324,27 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
     { bg: 'rgba(29,122,76,0.14)', color: C.green, weight: 600, size: 16 },
     { bg: 'rgba(29,122,76,0.07)', color: C.ink, weight: 600, size: 15 },
   ];
+  // Rang mit geteilten Plätzen: gleiche Wertung = gleicher Rang ("T1"). Solange noch niemand
+  // gestartet ist, stehen alle auf Rang 1 (T1) und es gibt keine Preisrang-Hervorhebung.
+  const noneStarted = visibleRows.length > 0 && visibleRows.every(r => !r.thru);
+  const rankKeyOf = (r) => {
+    if (activeClass === NETTO_CM_ID) return r.cmNettoRaw ?? 0;
+    if (activeClass === 'Jugend') return r.grossPts ?? 0;
+    if (activeClass === JUGEND_NETTO_ID) return r.netPts ?? 0;
+    if (isMasters && showGross) return r.grossToPar ?? null;
+    if (isMasters && Number(r.hcp) < MASTERS_STABLEFORD_FROM) return r.netToParHoles ?? null;
+    if (isStableford) return (showGross ? r.grossPts : r.netPts) ?? 0;
+    return (showGross ? r.grossToPar : r.netToPar) ?? null;
+  };
+  const sameRank = (a, b) => !a.disqualified && !b.disqualified && !a.withdrawn && !b.withdrawn
+    && !!a.strichGross === !!b.strichGross && !a.thru === !b.thru && rankKeyOf(a) === rankKeyOf(b);
+  const rankInfo = visibleRows.map((r, i) => {
+    let s0 = i; while (s0 > 0 && sameRank(visibleRows[s0 - 1], r)) s0--;
+    let e0 = i; while (e0 < visibleRows.length - 1 && sameRank(visibleRows[e0 + 1], r)) e0++;
+    return { n: s0 + 1, tied: e0 > s0 };
+  });
   const prizeTierForRow = (i, row) => {
+    if (noneStarted) return null;
     if (row && (row.disqualified || row.withdrawn)) return null; // DQ/WD bekommen nie eine Sieger-Hervorhebung
     if (row && isMasters && showGross && (row.strichGross || row.gross === null)) return null; // Masters-Brutto: Strich / noch nicht gestartet = keine Wertung
     if (excludedNote && i === 0) return null; // ausgeschlossener Spieler bekommt keinen Preisrang-Look
@@ -2405,7 +2427,7 @@ function PublicLeaderboard({ tournament, err, publicOnly }) {
             <div key={r.id} onClick={() => setDetailPlayer(r.id)}
               style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 20px', background: tier ? tier.bg : 'transparent', borderBottom: `1px solid ${C.line}`, cursor: 'pointer' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-                <span style={{ fontSize: 13, color: (r.disqualified || r.withdrawn) ? C.red : C.muted, width: 24, fontWeight: 700 }}>{r.disqualified ? 'DQ' : r.withdrawn ? 'WD' : (isMasters && showGross && (r.strichGross || r.gross === null)) ? '–' : i + 1}</span>
+                <span style={{ fontSize: 13, color: (r.disqualified || r.withdrawn) ? C.red : C.muted, width: 30, fontWeight: 700 }}>{r.disqualified ? 'DQ' : r.withdrawn ? 'WD' : (isMasters && showGross && (r.strichGross || (r.gross === null && !noneStarted))) ? '–' : (rankInfo[i].tied ? 'T' : '') + rankInfo[i].n}</span>
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: 7 }}>
                   <span style={{ fontSize: tier ? tier.size : 15, fontWeight: tier ? tier.weight : 500, color: tier ? tier.color : C.ink }}>{lastNameFirst(r.name)}{isStableford && activeHcpClass && r.id === bruttoLeaderIdFor(r.geschlecht) ? ' 🏆' : ''}</span>
                 </div>
@@ -2619,7 +2641,7 @@ function ScoreDetailModal({ tournament, playerId, initialRound, viewMode, findPl
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
               <span style={{ fontSize: 16, fontWeight: 600 }}>{lastNameFirst(p.name)}</span>
-              <span style={{ fontSize: 12, fontWeight: 400, color: C.muted }}>{p.hcp} ({courseHcp > 0 ? '+' : ''}{courseHcp})</span>
+              <span style={{ fontSize: 12, fontWeight: 400, color: C.muted }}>{p.hcp} ({signedVorgabe(courseHcp)})</span>
               {totalDisplay && (
                 <span style={{ fontSize: 17, fontWeight: 700, color: totalDisplay.color, marginLeft: 2 }}>{totalDisplay.text}</span>
               )}
@@ -2825,7 +2847,7 @@ function SoloEntry({ tournament, flightId, reload, isAdmin }) {
               <div key={p.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', background: C.board, borderRadius: 8 }}>
                 <div>
                   <div style={{ fontSize: 13, fontWeight: 500 }}>{p.name}</div>
-                  <div style={{ fontSize: 10, color: C.muted }}>Hcp {p.hcp} · Tee {effectiveTeeFor(p, m)} · Vorg. {playerSi}</div>
+                  <div style={{ fontSize: 10, color: C.muted }}>Hcp {p.hcp} · Tee {effectiveTeeFor(p, m)} · Vorg. {signedVorgabe(courseHandicapFor(p.hcp, effectiveTeeFor(p, m), m.holes))} · Loch-Index {playerSi}</div>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   {struck ? (
